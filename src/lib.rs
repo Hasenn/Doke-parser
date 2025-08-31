@@ -1,4 +1,8 @@
-use markdown::{mdast::Node, ParseOptions};
+//! # DokeParser
+//!
+//! Parses a Markdown-like Doke file into `DokeStatement`s while tracking positions for content and children.
+
+use markdown::{ParseOptions, mdast::Node};
 use std::fmt;
 
 #[derive(Debug, Clone)]
@@ -8,32 +12,19 @@ pub struct DokeDocument {
 
 #[derive(Debug, Clone)]
 pub struct DokeStatement {
-    pub content: String,
     pub children: Vec<DokeStatement>,
-    pub content_position: Option<(usize, usize)>, // Position of the content text only
-    pub children_position: Option<(usize, usize)>, // Position of the children in source
+    pub content_position: Option<(usize, usize)>, // text only, including inline code/links/emphasis
+    pub position: Option<(usize, usize)>,         // full statement including children
+    pub children_position: Option<(usize, usize)>, // full children text
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum DokeParseError {
     #[error("Markdown parsing error: {0}")]
     MarkdownParseError(String),
-    
     #[error("Invalid document structure")]
     InvalidStructure,
 }
-
-impl fmt::Display for DokeStatement {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.content)?;
-        if !self.children.is_empty() {
-            write!(f, " ({} children)", self.children.len())?;
-        }
-        Ok(())
-    }
-}
-
-
 
 pub struct DokeParser {
     options: ParseOptions,
@@ -53,11 +44,9 @@ impl DokeParser {
     }
 
     pub fn parse(&self, input: &str) -> Result<DokeDocument, DokeParseError> {
-        let root_node = markdown::to_mdast(input, &self.options)
+        let root_node: Node = markdown::to_mdast(input, &self.options)
             .map_err(|e| DokeParseError::MarkdownParseError(e.to_string()))?;
-
-        let statements = self.extract_statements_with_hierarchy(&root_node, input)?;
-        
+        let statements: Vec<DokeStatement> = self.extract_statements_with_hierarchy(&root_node, input)?;
         Ok(DokeDocument { statements })
     }
 
@@ -67,68 +56,55 @@ impl DokeParser {
         source: &str,
     ) -> Result<Vec<DokeStatement>, DokeParseError> {
         let mut statements: Vec<DokeStatement> = Vec::new();
-        
         if let Node::Root(root) = node {
             let mut previous_index: Option<usize> = None;
-
-            'children: for child in &root.children {
+            for child in &root.children {
                 match child {
-                    // Paragraph → statement (can accept children only if it ends with :)
                     Node::Paragraph(_) => {
-                        let content = self.extract_clean_text_content(child, source);
                         let content_position = self.get_clean_content_position(child, source);
-
-                        let statement = DokeStatement {
-                            content: content.clone(),
+                        let full_position = child.position().map(|p| (p.start.offset, p.end.offset));
+                        statements.push(DokeStatement {
                             children: Vec::new(),
                             content_position,
+                            position: full_position,
                             children_position: None,
-                        };
-
-                        statements.push(statement);
-
-                        // Only paragraphs ending with ':' can have children
-                        if content.trim_end().ends_with(':') {
-                            previous_index = Some(statements.len() - 1);
-                        } else {
-                            previous_index = None;
-                        }
+                        });
+                        previous_index = if let Some((start, end)) = content_position {
+                            if source[start..end].trim_end().ends_with(':') {
+                                Some(statements.len() - 1)
+                            } else {
+                                None
+                            }
+                        } else { None };
                     }
-
-                    // List → attach only if last paragraph ended with ':'
                     Node::List(_) => {
                         if let Some(prev_idx) = previous_index {
                             let (children, children_pos) = self.extract_list_children(child, source)?;
                             if let Some(prev_stmt) = statements.get_mut(prev_idx) {
                                 prev_stmt.children.extend(children);
-                                prev_stmt.children_position =
-                                    self.merge_positions(prev_stmt.children_position, children_pos);
+                                prev_stmt.children_position = self.merge_positions(prev_stmt.children_position, children_pos);
+                                if let Some((start, end)) = children_pos {
+                                    prev_stmt.position = prev_stmt.position.map(|(s, e)| (s.min(start), e.max(end))).or(Some((start, end)));
+                                }
                             }
-                            continue 'children;
+                            continue;
                         }
-
-                        // Otherwise → treat as top-level list
-                        let (children, _children_pos) = self.extract_list_children(child, source)?;
+                        let (children, _) = self.extract_list_children(child, source)?;
                         statements.extend(children);
                         previous_index = None;
                     }
-
-                    // Headings → always new statement with potential children
                     Node::Heading(_) => {
-                        let content = self.extract_clean_text_content(child, source);
                         let content_position = self.get_clean_content_position(child, source);
+                        let full_position = child.position().map(|p| (p.start.offset, p.end.offset));
                         let (children, children_pos) = self.extract_direct_children(child, source)?;
-
                         statements.push(DokeStatement {
-                            content,
                             children,
                             content_position,
+                            position: full_position,
                             children_position: children_pos,
                         });
                         previous_index = None;
                     }
-
-                    // Fallback handler for other node types
                     _ => {
                         let child_statements = self.process_other_node(child, source)?;
                         statements.extend(child_statements);
@@ -137,15 +113,17 @@ impl DokeParser {
                 }
             }
         }
-        
         Ok(statements)
     }
 
-    fn merge_positions(&self, pos1: Option<(usize, usize)>, pos2: Option<(usize, usize)>) -> Option<(usize, usize)> {
+    fn merge_positions(
+        &self,
+        pos1: Option<(usize, usize)>,
+        pos2: Option<(usize, usize)>,
+    ) -> Option<(usize, usize)> {
         match (pos1, pos2) {
-            (Some((start1, end1)), Some((start2, end2))) => Some((start1.min(start2), end1.max(end2))),
-            (Some(pos), None) => Some(pos),
-            (None, Some(pos)) => Some(pos),
+            (Some((s1, e1)), Some((s2, e2))) => Some((s1.min(s2), e1.max(e2))),
+            (Some(pos), None) | (None, Some(pos)) => Some(pos),
             (None, None) => None,
         }
     }
@@ -156,35 +134,25 @@ impl DokeParser {
         source: &str,
     ) -> Result<(Vec<DokeStatement>, Option<(usize, usize)>), DokeParseError> {
         let mut children = Vec::new();
-        let mut children_start = None;
-        let mut children_end = None;
-        
+        let mut children_start: Option<usize> = None;
+        let mut children_end: Option<usize> = None;
         if let Node::List(list) = list_node {
             for item in &list.children {
-                let content = self.extract_clean_text_content(item, source);
-                let (item_children, item_children_pos) = self.extract_list_item_children(item, source)?;
                 let content_position = self.get_clean_content_position(item, source);
-
-                if let Some(pos) = content_position {
-                    children_start = children_start.min(Some(pos.0)).or(Some(pos.0));
-                    children_end = children_end.max(Some(pos.1)).or(Some(pos.1));
+                let (item_children, item_children_pos) = self.extract_list_item_children(item, source)?;
+                if let Some(pos) = item.position() {
+                    children_start = Some(children_start.map_or(pos.start.offset, |s| s.min(pos.start.offset)));
+                    children_end = Some(children_end.map_or(pos.end.offset, |e| e.max(pos.end.offset)));
                 }
-
                 children.push(DokeStatement {
-                    content,
                     children: item_children,
                     content_position,
+                    position: item.position().map(|p| (p.start.offset, p.end.offset)),
                     children_position: item_children_pos,
                 });
             }
         }
-
-        let children_position = if let (Some(start), Some(end)) = (children_start, children_end) {
-            Some((start, end))
-        } else {
-            None
-        };
-
+        let children_position = if let (Some(s), Some(e)) = (children_start, children_end) { Some((s, e)) } else { None };
         Ok((children, children_position))
     }
 
@@ -194,42 +162,32 @@ impl DokeParser {
         source: &str,
     ) -> Result<(Vec<DokeStatement>, Option<(usize, usize)>), DokeParseError> {
         let mut children = Vec::new();
-        let mut children_start = None;
-        let mut children_end = None;
-
+        let mut children_start: Option<usize> = None;
+        let mut children_end: Option<usize> = None;
         if let Some(child_nodes) = list_item.children() {
             for child in child_nodes {
                 match child {
-                    Node::Paragraph(_) => {} // Paragraphs inside list item become content, not children
+                    Node::Paragraph(_) => {}
                     Node::List(_) => {
-                        let nested_items = self.extract_list_children(child, source)?;
-                        if !nested_items.0.is_empty() {
-                            if let Some(pos) = child.position() {
-                                children_start = children_start.min(Some(pos.start.offset)).or(Some(pos.start.offset));
-                                children_end = children_end.max(Some(pos.end.offset)).or(Some(pos.end.offset));
-                            }
+                        let (nested, nested_pos) = self.extract_list_children(child, source)?;
+                        if let Some((start, end)) = nested_pos {
+                            children_start = Some(children_start.map_or(start, |s| s.min(start)));
+                            children_end = Some(children_end.map_or(end, |e| e.max(end)));
                         }
-                        children.extend(nested_items.0);
+                        children.extend(nested);
                     }
                     _ => {
-                        let child_statements = self.process_other_node(child, source)?;
-                        if !child_statements.is_empty() {
-                            if let Some(pos) = child.position() {
-                                children_start = children_start.min(Some(pos.start.offset)).or(Some(pos.start.offset));
-                                children_end = children_end.max(Some(pos.end.offset)).or(Some(pos.end.offset));
-                            }
+                        let other = self.process_other_node(child, source)?;
+                        if let Some(pos) = child.position() {
+                            children_start = Some(children_start.map_or(pos.start.offset, |s| s.min(pos.start.offset)));
+                            children_end = Some(children_end.map_or(pos.end.offset, |e| e.max(pos.end.offset)));
                         }
-                        children.extend(child_statements);
+                        children.extend(other);
                     }
                 }
             }
         }
-
-        let children_position = if let (Some(start), Some(end)) = (children_start, children_end) {
-            Some((start, end))
-        } else {
-            None
-        };
+        let children_position = if let (Some(s), Some(e)) = (children_start, children_end) { Some((s, e)) } else { None };
         Ok((children, children_position))
     }
 
@@ -239,50 +197,36 @@ impl DokeParser {
         source: &str,
     ) -> Result<(Vec<DokeStatement>, Option<(usize, usize)>), DokeParseError> {
         let mut children = Vec::new();
-        let mut children_start = None;
-        let mut children_end = None;
-        
+        let mut start: Option<usize> = None;
+        let mut end: Option<usize> = None;
         if let Some(child_nodes) = parent.children() {
             for child in child_nodes {
-                match child {
-                    Node::Paragraph(_) | Node::Heading(_) | Node::List(_) => {
-                        let child_statements = self.process_other_node(child, source)?;
-                        if !child_statements.is_empty() {
-                            if let Some(pos) = child.position() {
-                                children_start = children_start.min(Some(pos.start.offset)).or(Some(pos.start.offset));
-                                children_end = children_end.max(Some(pos.end.offset)).or(Some(pos.end.offset));
-                            }
-                        }
-                        children.extend(child_statements);
-                    }
-                    _ => {}
+                let child_stmts = self.process_other_node(child, source)?;
+                children.extend(child_stmts);
+                if let Some(pos) = child.position() {
+                    start = Some(start.map_or(pos.start.offset, |s| s.min(pos.start.offset)));
+                    end = Some(end.map_or(pos.end.offset, |e| e.max(pos.end.offset)));
                 }
             }
         }
-
-        let children_position = if let (Some(start), Some(end)) = (children_start, children_end) {
-            Some((start, end))
-        } else {
-            None
-        };
-        
+        let children_position = if let (Some(s), Some(e)) = (start, end) { Some((s, e)) } else { None };
         Ok((children, children_position))
     }
 
     fn process_other_node(
         &self,
         node: &Node,
-        source: &str,
+        _source: &str,
     ) -> Result<Vec<DokeStatement>, DokeParseError> {
         match node {
             Node::Heading(_) => {
-                let content = self.extract_clean_text_content(node, source);
-                let (children, children_pos) = self.extract_direct_children(node, source)?;
-                let content_position = self.get_clean_content_position(node, source);
+                let content_position = self.get_clean_content_position(node, _source);
+                let full_position = node.position().map(|p| (p.start.offset, p.end.offset));
+                let (children, children_pos) = self.extract_direct_children(node, _source)?;
                 Ok(vec![DokeStatement {
-                    content,
                     children,
                     content_position,
+                    position: full_position,
                     children_position: children_pos,
                 }])
             }
@@ -290,149 +234,52 @@ impl DokeParser {
         }
     }
 
-    fn extract_clean_text_content(&self, node: &Node, source: &str) -> String {
+    /// Computes the range of inline content for paragraphs, headings, or list items.
+    /// Includes Text, inline Code, Links, Emphasis, and Wikilinks.
+    fn get_clean_content_position(&self, node: &Node, _source: &str) -> Option<(usize, usize)> {
         match node {
-            Node::Text(text) => text.value.clone(),
-            Node::Paragraph(_) | Node::Heading(_) | Node::ListItem(_) => {
-                self.collect_clean_text_from_children(node, source)
-            }
-            _ => String::new(),
-        }
-    }
-
-    fn collect_clean_text_from_children(&self, node: &Node, source: &str) -> String {
-        let mut content = String::new();
-
-        if let Some(children) = node.children() {
-            for child in children {
-                match child {
-                    Node::Text(text) => {
-                        if !content.is_empty() { content.push(' '); }
-                        content.push_str(&text.value);
-                    }
-                    Node::Code(code) => {
-                        if !content.is_empty() { content.push(' '); }
-                        content.push_str(&code.value);
-                    }
-                    Node::Link(link) => {
-                        let mut parts = Vec::new();
-                        for c in &link.children {
-                            let t = self.collect_clean_text_from_children(c, source);
-                            if !t.is_empty() { parts.push(t); }
-                        }
-                        if !parts.is_empty() {
-                            if !content.is_empty() { content.push(' '); }
-                            content.push_str(&parts.join(" "));
-                        }
-                    }
-                    _ => {
-                        let child_content = self.collect_clean_text_from_children(child, source);
-                        if !child_content.is_empty() {
-                            if !content.is_empty() { content.push(' '); }
-                            content.push_str(&child_content);
+            Node::ListItem(_) => {
+                let mut start = usize::MAX;
+                let mut end = 0;
+                if let Some(children) = node.children() {
+                    for child in children {
+                        match child {
+                            Node::Paragraph(_) => {
+                                if let Some((s, e)) = self.get_clean_content_position(child, _source) {
+                                    start = start.min(s);
+                                    end = end.max(e);
+                                }
+                            }
+                            Node::List(_) => {} // block list, excluded
+                            _ => {}
                         }
                     }
                 }
+                if start <= end { Some((start, end)) } else { None }
             }
-        }
-
-        content
-    }
-
-    fn get_clean_content_position(&self, node: &Node, source: &str) -> Option<(usize, usize)> {
-        self.trim_node_content_position(node, source)
-    }   
-    fn trim_node_content_position(&self, node: &Node, source: &str) -> Option<(usize, usize)> {
-        let pos = node.position()?;
-        let mut start = pos.start.offset;
-        let mut end = pos.end.offset;
-
-        // Trim leading whitespace
-        while start < end {
-            let c = source[start..].chars().next()?;
-            if !c.is_whitespace() { break; }
-            start += c.len_utf8();
-        }
-
-        // Trim trailing whitespace
-        while end > start {
-            let c = source[..end].chars().rev().next()?;
-            if !c.is_whitespace() { break; }
-            end -= c.len_utf8();
-        }
-
-        // If this is a list item, skip bullet/number
-        if let Node::ListItem(_) = node {
-            // Get line text
-            if let Some(line_end_rel) = source[start..end].find('\n') {
-                let line = &source[start..start + line_end_rel];
-                let re = regex::Regex::new(r"^(\s*[-*+] |\s*\d+\.\s+)").unwrap();
-                if let Some(mat) = re.find(line) {
-                    start += mat.end();
+            Node::Paragraph(_) | Node::Heading(_) => {
+                let mut start = usize::MAX;
+                let mut end = 0;
+                if let Some(children) = node.children() {
+                    for child in children {
+                        match child {
+                            Node::Text(_) | Node::Code(_) | Node::Link(_) => {
+                                if let Some(pos) = child.position() {
+                                    start = start.min(pos.start.offset);
+                                    end = end.max(pos.end.offset);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                 }
-            } else {
-                // Single line
-                let line = &source[start..end];
-                let re = regex::Regex::new(r"^(\s*[-*+] |\s*\d+\.\s+)").unwrap();
-                if let Some(mat) = re.find(line) {
-                    start += mat.end();
-                }
+                if start <= end { Some((start, end)) } else { None }
             }
-        }
-
-        if start < end { Some((start, end)) } else { None }
-    }
-
-}
-
-impl DokeDocument {
-    pub fn find_statements_by_content(&self, search: &str) -> Vec<&DokeStatement> {
-        let mut results = Vec::new();
-        self.find_statements_recursive(&self.statements, search, &mut results);
-        results
-    }
-
-    fn find_statements_recursive<'a>(
-        &'a self,
-        statements: &'a [DokeStatement],
-        search: &str,
-        results: &mut Vec<&'a DokeStatement>,
-    ) {
-        for statement in statements {
-            if statement.content.contains(search) {
-                results.push(statement);
+            Node::Text(_) | Node::Code(_) | Node::Link(_) => {
+                let pos = node.position()?;
+                Some((pos.start.offset, pos.end.offset))
             }
-            self.find_statements_recursive(&statement.children, search, results);
+            _ => None,
         }
-    }
-
-    fn trim_node_content_position(&self, node: &Node, source: &str) -> Option<(usize, usize)> {
-        let pos = node.position()?;
-        let mut start = pos.start.offset;
-        let mut end = pos.end.offset;
-
-        // Trim leading whitespace
-        while start < end && source[start..].chars().next().unwrap().is_whitespace() {
-            start += source[start..].chars().next().unwrap().len_utf8();
-        }
-
-        // Trim trailing whitespace
-        while end > start && source[..end].chars().rev().next().unwrap().is_whitespace() {
-            end -= source[..end].chars().rev().next().unwrap().len_utf8();
-        }
-
-        // If this is a list item, skip the bullet/number
-        if let Node::ListItem(_) = node {
-            if let Some(line_end) = source[start..end].find('\n') {
-                let line = &source[start..start+line_end];
-                let re = regex::Regex::new(r"^(\s*[-*+] |\s*\d+\.\s+)").unwrap();
-                if let Some(mat) = re.find(line) {
-                    start += mat.end();
-                }
-            }
-        }
-
-        if start < end { Some((start, end)) } else { None }
     }
 }
-
