@@ -143,7 +143,7 @@ fn extract_frontmatter(input: &str) -> (Option<&str>, &str) {
     let mut parts = input.splitn(3, "---");
 
     // First part is before the first '---' (likely empty if frontmatter at start)
-    let first = parts.next().unwrap_or("").trim_start();
+    let _first = parts.next().unwrap_or("").trim_start();
 
     // Second part is frontmatter
     if let Some(fm) = parts.next() {
