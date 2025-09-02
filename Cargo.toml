@@ -10,7 +10,6 @@ homepage = "https://github.com/Hasenn/Doke-parser.git"
 repository = "https://github.com/Hasenn/Doke-parser.git"
 readme = "README.md"
 keywords = ["parsing", "doke", "dokedex"]  
-categories = ["game-dev", "parser"]  
 
 [dependencies]
 lalrpop-util = { version = "0.22.2", features = ["lexer"] }
