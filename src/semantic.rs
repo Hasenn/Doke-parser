@@ -57,31 +57,6 @@ pub enum DokeNodeState {
 pub trait DokeParser {
     fn process(&self, node: &mut DokeNode, frontmatter: &HashMap<String, GodotValue>);
 }
-
-/// Recursive pipeline now passes frontmatter to every parser call
-pub fn run_pipeline(
-    root_nodes: &mut [DokeNode],
-    parsers: &[Box<dyn DokeParser>],
-    frontmatter: &HashMap<String, GodotValue>,
-) {
-    for parser in parsers {
-        for node in root_nodes.iter_mut() {
-            process_node_recursively(node, parser.as_ref(), frontmatter);
-        }
-    }
-}
-
-fn process_node_recursively(
-    node: &mut DokeNode,
-    parser: &dyn DokeParser,
-    frontmatter: &HashMap<String, GodotValue>,
-) {
-    parser.process(node, frontmatter);
-    for child in &mut node.children {
-        process_node_recursively(child, parser, frontmatter);
-    }
-}
-
 // ----------------- Error Types -----------------
 
 #[derive(Debug, Error)]
@@ -116,10 +91,20 @@ impl DokeValidate {
         frontmatter: &HashMap<String, GodotValue>,
     ) -> Result<Vec<GodotValue>, DokeValidationError> {
         let mut validator = Self::new();
-        let results = validator.process_nodes(root_nodes, frontmatter);
+        let results: Vec<Result<GodotValue, DokeValidationError>> =
+            root_nodes.iter_mut().map(|n| validator.process_node(n, frontmatter)).collect();
+
+        // Flatten results
+        let mut ok_values = Vec::new();
+        for r in results {
+            match r {
+                Ok(v) => ok_values.push(v),
+                Err(e) => validator.errors.push(e),
+            }
+        }
 
         if validator.errors.is_empty() {
-            Ok(results)
+            Ok(ok_values)
         } else if validator.errors.len() == 1 {
             Err(validator.errors.remove(0))
         } else {
@@ -127,63 +112,62 @@ impl DokeValidate {
         }
     }
 
-    fn process_nodes(
+    fn process_node(
         &mut self,
-        nodes: &mut [DokeNode],
+        node: &mut DokeNode,
         frontmatter: &HashMap<String, GodotValue>,
-    ) -> Vec<GodotValue> {
-        nodes.iter_mut().map(|node| self.process_node(node, frontmatter)).collect()
-    }
-
-    fn process_node(&mut self, node: &mut DokeNode, frontmatter: &HashMap<String, GodotValue>) -> GodotValue {
-        let child_values = self.process_nodes(&mut node.children, frontmatter);
+    ) -> Result<GodotValue, DokeValidationError> {
+        let mut child_values = Vec::new();
+        for child in &mut node.children {
+            match self.process_node(child, frontmatter) {
+                Ok(v) => child_values.push(v),
+                Err(e) => return Err(e),
+            }
+        }
 
         match &mut node.state {
             DokeNodeState::Unresolved => {
-                self.errors.push(DokeValidationError::UnresolvedNode(node.statement.clone()));
-                GodotValue::Nil
+                Err(DokeValidationError::UnresolvedNode(node.statement.clone()))
             }
             DokeNodeState::Hypothesis(hypotheses) => {
-                let best_index = hypotheses.iter()
+                let best_index = hypotheses
+                    .iter()
                     .enumerate()
-                    .max_by(|(_, a), (_, b)| a.confidence().partial_cmp(&b.confidence()).unwrap())
+                    .max_by(|(_, a), (_, b)| a.confidence().partial_cmp(&b.confidence()).unwrap_or(std::cmp::Ordering::Equal))
                     .map(|(i, _)| i);
 
                 if let Some(best_index) = best_index {
                     let hypo = hypotheses.remove(best_index);
-                    match hypo.promote() {
-                        Ok(mut resolved) => {
-                            for child in &child_values {
-                                if let Err(e) = resolved.use_child(child.clone()) {
-                                    self.errors.push(DokeValidationError::ChildUsageFailed(e));
-                                }
-                            }
-                            node.state = DokeNodeState::Resolved(resolved);
-                            if let DokeNodeState::Resolved(resolved) = &node.state {
-                                resolved.to_godot()
-                            } else { GodotValue::Nil }
-                        }
-                        Err(e) => {
-                            self.errors.push(DokeValidationError::HypothesisPromotionFailed(e));
-                            GodotValue::Nil
-                        }
+                    let mut resolved = hypo.promote()
+                        .map_err(DokeValidationError::HypothesisPromotionFailed)?;
+
+                    for child in &child_values {
+                        resolved.use_child(child.clone())
+                            .map_err(DokeValidationError::ChildUsageFailed)?;
+                    }
+
+                    node.state = DokeNodeState::Resolved(resolved);
+                    if let DokeNodeState::Resolved(resolved) = &node.state {
+                        Ok(resolved.to_godot())
+                    } else {
+                        unreachable!()
                     }
                 } else {
-                    self.errors.push(DokeValidationError::UnresolvedNode(node.statement.clone()));
-                    GodotValue::Nil
+                    Err(DokeValidationError::UnresolvedNode(node.statement.clone()))
                 }
             }
             DokeNodeState::Resolved(resolved) => {
                 for child in &child_values {
-                    if let Err(e) = resolved.use_child(child.clone()) {
-                        self.errors.push(DokeValidationError::ChildUsageFailed(e));
-                    }
+                    resolved.use_child(child.clone())
+                        .map_err(DokeValidationError::ChildUsageFailed)?;
                 }
-                resolved.to_godot()
+                Ok(resolved.to_godot())
             }
             DokeNodeState::Error(e) => {
-                self.errors.push(DokeValidationError::NodeError(node.statement.clone(), format!("{}", e)));
-                GodotValue::Nil
+                Err(DokeValidationError::NodeError(
+                    node.statement.clone(),
+                    format!("{}", e),
+                ))
             }
         }
     }

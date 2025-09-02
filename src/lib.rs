@@ -2,12 +2,12 @@
 mod base_parser;
 pub mod parsers;
 pub mod semantic;
-pub use base_parser::{DokeBaseDocument, DokeBaseParser, DokeStatement};
+use base_parser::{DokeBaseParser, DokeStatement};
 pub use semantic::GodotValue;
 pub use semantic::{DokeNode, DokeParser};
 use std::collections::HashMap;
 use markdown::ParseOptions;
-use crate::semantic::DokeNodeState;
+use crate::semantic::{DokeNodeState, DokeValidate, DokeValidationError};
 
 #[derive(Debug)]
 /// Normalized DokeDocument returned from the pipeline
@@ -30,6 +30,14 @@ impl<'a> DokePipe<'a> {
         }
     }
 
+    pub fn validate(&self, input: &str) -> Result<Vec<GodotValue>, DokeValidationError> {
+        let doc = self.run_markdown(input);
+
+        // Run validator on parsed nodes
+        let mut nodes = doc.nodes;
+        DokeValidate::validate_tree(&mut nodes, &doc.frontmatter)
+    }
+    
     pub fn add<P>(mut self, parser: P) -> Self
     where
         P: DokeParser + 'a,
