@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-markdown = "1.0.0"
+lalrpop-util = { version = "0.22.2", features = ["lexer"] }
+markdown = { version = "1.0.0", features = ["serde"] }
 regex = "1.11.2"
+serde = "1.0.219"
 thiserror = "2.0.16"
+yaml-rust2 = "0.10.3"
+
+
+[build-dependencies]
+lalrpop = { version = "0.22.2", features = ["lexer"] }

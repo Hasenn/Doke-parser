@@ -1,285 +1,174 @@
-//! # DokeParser
-//!
-//! Parses a Markdown-like Doke file into `DokeStatement`s while tracking positions for content and children.
+#![allow(dead_code)]
+mod base_parser;
+pub mod parsers;
+pub mod semantic;
+pub use base_parser::{DokeBaseDocument, DokeBaseParser, DokeStatement};
+pub use semantic::GodotValue;
+pub use semantic::{DokeNode, DokeParser};
+use std::collections::HashMap;
+use markdown::ParseOptions;
+use crate::semantic::DokeNodeState;
 
-use markdown::{ParseOptions, mdast::Node};
-use std::fmt;
-
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+/// Normalized DokeDocument returned from the pipeline
 pub struct DokeDocument {
-    pub statements: Vec<DokeStatement>,
+    pub nodes: Vec<DokeNode>,
+    pub frontmatter: HashMap<String, GodotValue>,
 }
 
-#[derive(Debug, Clone)]
-pub struct DokeStatement {
-    pub children: Vec<DokeStatement>,
-    pub content_position: Option<(usize, usize)>, // text only, including inline code/links/emphasis
-    pub position: Option<(usize, usize)>,         // full statement including children
-    pub children_position: Option<(usize, usize)>, // full children text
+/// Full pipeline
+pub struct DokePipe<'a> {
+    parsers: Vec<Box<dyn DokeParser + 'a>>,
+    parse_options: ParseOptions,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum DokeParseError {
-    #[error("Markdown parsing error: {0}")]
-    MarkdownParseError(String),
-    #[error("Invalid document structure")]
-    InvalidStructure,
-}
-
-pub struct DokeParser {
-    options: ParseOptions,
-}
-
-impl Default for DokeParser {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl DokeParser {
+impl<'a> DokePipe<'a> {
     pub fn new() -> Self {
         Self {
-            options: ParseOptions::default(),
+            parsers: vec![],
+            parse_options: ParseOptions::default(),
         }
     }
 
-    pub fn parse(&self, input: &str) -> Result<DokeDocument, DokeParseError> {
-        let root_node: Node = markdown::to_mdast(input, &self.options)
-            .map_err(|e| DokeParseError::MarkdownParseError(e.to_string()))?;
-        let statements: Vec<DokeStatement> = self.extract_statements_with_hierarchy(&root_node, input)?;
-        Ok(DokeDocument { statements })
+    pub fn add<P>(mut self, parser: P) -> Self
+    where
+        P: DokeParser + 'a,
+    {
+        self.parsers.push(Box::new(parser));
+        self
     }
 
-    fn extract_statements_with_hierarchy(
-        &self,
-        node: &Node,
-        source: &str,
-    ) -> Result<Vec<DokeStatement>, DokeParseError> {
-        let mut statements: Vec<DokeStatement> = Vec::new();
-        if let Node::Root(root) = node {
-            let mut previous_index: Option<usize> = None;
-            for child in &root.children {
-                match child {
-                    Node::Paragraph(_) => {
-                        let content_position = self.get_clean_content_position(child, source);
-                        let full_position = child.position().map(|p| (p.start.offset, p.end.offset));
-                        statements.push(DokeStatement {
-                            children: Vec::new(),
-                            content_position,
-                            position: full_position,
-                            children_position: None,
-                        });
-                        previous_index = if let Some((start, end)) = content_position {
-                            if source[start..end].trim_end().ends_with(':') {
-                                Some(statements.len() - 1)
-                            } else {
-                                None
-                            }
-                        } else { None };
-                    }
-                    Node::List(_) => {
-                        if let Some(prev_idx) = previous_index {
-                            let (children, children_pos) = self.extract_list_children(child, source)?;
-                            if let Some(prev_stmt) = statements.get_mut(prev_idx) {
-                                prev_stmt.children.extend(children);
-                                prev_stmt.children_position = self.merge_positions(prev_stmt.children_position, children_pos);
-                                if let Some((start, end)) = children_pos {
-                                    prev_stmt.position = prev_stmt.position.map(|(s, e)| (s.min(start), e.max(end))).or(Some((start, end)));
-                                }
-                            }
-                            continue;
-                        }
-                        let (children, _) = self.extract_list_children(child, source)?;
-                        statements.extend(children);
-                        previous_index = None;
-                    }
-                    Node::Heading(_) => {
-                        let content_position = self.get_clean_content_position(child, source);
-                        let full_position = child.position().map(|p| (p.start.offset, p.end.offset));
-                        let (children, children_pos) = self.extract_direct_children(child, source)?;
-                        statements.push(DokeStatement {
-                            children,
-                            content_position,
-                            position: full_position,
-                            children_position: children_pos,
-                        });
-                        previous_index = None;
-                    }
-                    _ => {
-                        let child_statements = self.process_other_node(child, source)?;
-                        statements.extend(child_statements);
-                        previous_index = None;
+    pub fn map<P>(mut self, parser: P) -> Self
+    where
+        P: DokeParser + 'a,
+    {
+        struct Mapper<P: DokeParser> {
+            parser: P,
+        }
+
+        impl<P: DokeParser> DokeParser for Mapper<P> {
+            fn process(&self, node: &mut DokeNode, frontmatter: &HashMap<String, GodotValue>) {
+                self.parser.process(node, frontmatter);
+                for child in &mut node.children {
+                    self.process(child, frontmatter);
+                }
+            }
+        }
+
+        self.parsers.push(Box::new(Mapper { parser }));
+        self
+    }
+
+    /// Run pipeline on a Markdown string and return a DokeDocument
+    pub fn run_markdown(&self, input: &str) -> DokeDocument {
+        // Extract frontmatter and remaining markdown
+        let (frontmatter_str, markdown_str) = extract_frontmatter(input);
+
+        // Convert markdown into MD AST using configured ParseOptions
+        let root_node = markdown::to_mdast(&markdown_str, &self.parse_options).unwrap();
+
+        let doc = DokeBaseParser::parse_document(&root_node, frontmatter_str).unwrap();
+
+        // Convert frontmatter YAML → normalized HashMap<String, GodotValue>
+        let mut fm_map = HashMap::new();
+        if let Some(fm) = &doc.frontmatter {
+            if let yaml_rust2::Yaml::Hash(h) = fm {
+                for (k, v) in h {
+                    if let yaml_rust2::Yaml::String(s) = k {
+                        let key = normalize_key(s);
+                        fm_map.insert(key, yaml_value_to_godot(v.clone()));
                     }
                 }
             }
         }
-        Ok(statements)
-    }
 
-    fn merge_positions(
-        &self,
-        pos1: Option<(usize, usize)>,
-        pos2: Option<(usize, usize)>,
-    ) -> Option<(usize, usize)> {
-        match (pos1, pos2) {
-            (Some((s1, e1)), Some((s2, e2))) => Some((s1.min(s2), e1.max(e2))),
-            (Some(pos), None) | (None, Some(pos)) => Some(pos),
-            (None, None) => None,
-        }
-    }
+        fn statements_to_nodes(stmts: &[DokeStatement], input: &str) -> Vec<DokeNode> {
+            stmts
+                .iter()
+                .map(|stmt| {
+                    let statement_text = if let Some(pos) = &stmt.statement_position {
+                        // Safely slice the input string using byte offsets
+                        input.get(pos.start..pos.end).unwrap_or_default().to_string()
+                    } else {
+                        "".to_string()
+                    };
 
-    fn extract_list_children(
-        &self,
-        list_node: &Node,
-        source: &str,
-    ) -> Result<(Vec<DokeStatement>, Option<(usize, usize)>), DokeParseError> {
-        let mut children = Vec::new();
-        let mut children_start: Option<usize> = None;
-        let mut children_end: Option<usize> = None;
-        if let Node::List(list) = list_node {
-            for item in &list.children {
-                let content_position = self.get_clean_content_position(item, source);
-                let (item_children, item_children_pos) = self.extract_list_item_children(item, source)?;
-                if let Some(pos) = item.position() {
-                    children_start = Some(children_start.map_or(pos.start.offset, |s| s.min(pos.start.offset)));
-                    children_end = Some(children_end.map_or(pos.end.offset, |e| e.max(pos.end.offset)));
-                }
-                children.push(DokeStatement {
-                    children: item_children,
-                    content_position,
-                    position: item.position().map(|p| (p.start.offset, p.end.offset)),
-                    children_position: item_children_pos,
-                });
-            }
-        }
-        let children_position = if let (Some(s), Some(e)) = (children_start, children_end) { Some((s, e)) } else { None };
-        Ok((children, children_position))
-    }
-
-    fn extract_list_item_children(
-        &self,
-        list_item: &Node,
-        source: &str,
-    ) -> Result<(Vec<DokeStatement>, Option<(usize, usize)>), DokeParseError> {
-        let mut children = Vec::new();
-        let mut children_start: Option<usize> = None;
-        let mut children_end: Option<usize> = None;
-        if let Some(child_nodes) = list_item.children() {
-            for child in child_nodes {
-                match child {
-                    Node::Paragraph(_) => {}
-                    Node::List(_) => {
-                        let (nested, nested_pos) = self.extract_list_children(child, source)?;
-                        if let Some((start, end)) = nested_pos {
-                            children_start = Some(children_start.map_or(start, |s| s.min(start)));
-                            children_end = Some(children_end.map_or(end, |e| e.max(end)));
-                        }
-                        children.extend(nested);
+                    DokeNode {
+                        statement: statement_text,
+                        state: DokeNodeState::Unresolved,
+                        children: statements_to_nodes(&stmt.children, input),
                     }
-                    _ => {
-                        let other = self.process_other_node(child, source)?;
-                        if let Some(pos) = child.position() {
-                            children_start = Some(children_start.map_or(pos.start.offset, |s| s.min(pos.start.offset)));
-                            children_end = Some(children_end.map_or(pos.end.offset, |e| e.max(pos.end.offset)));
-                        }
-                        children.extend(other);
-                    }
-                }
+                })
+                .collect()
+        }
+
+        let mut nodes = statements_to_nodes(&doc.statements, markdown_str);
+
+
+        for parser in &self.parsers {
+            for node in nodes.iter_mut() {
+                parser.process(node, &fm_map);
             }
         }
-        let children_position = if let (Some(s), Some(e)) = (children_start, children_end) { Some((s, e)) } else { None };
-        Ok((children, children_position))
-    }
 
-    fn extract_direct_children(
-        &self,
-        parent: &Node,
-        source: &str,
-    ) -> Result<(Vec<DokeStatement>, Option<(usize, usize)>), DokeParseError> {
-        let mut children = Vec::new();
-        let mut start: Option<usize> = None;
-        let mut end: Option<usize> = None;
-        if let Some(child_nodes) = parent.children() {
-            for child in child_nodes {
-                let child_stmts = self.process_other_node(child, source)?;
-                children.extend(child_stmts);
-                if let Some(pos) = child.position() {
-                    start = Some(start.map_or(pos.start.offset, |s| s.min(pos.start.offset)));
-                    end = Some(end.map_or(pos.end.offset, |e| e.max(pos.end.offset)));
-                }
-            }
-        }
-        let children_position = if let (Some(s), Some(e)) = (start, end) { Some((s, e)) } else { None };
-        Ok((children, children_position))
-    }
-
-    fn process_other_node(
-        &self,
-        node: &Node,
-        _source: &str,
-    ) -> Result<Vec<DokeStatement>, DokeParseError> {
-        match node {
-            Node::Heading(_) => {
-                let content_position = self.get_clean_content_position(node, _source);
-                let full_position = node.position().map(|p| (p.start.offset, p.end.offset));
-                let (children, children_pos) = self.extract_direct_children(node, _source)?;
-                Ok(vec![DokeStatement {
-                    children,
-                    content_position,
-                    position: full_position,
-                    children_position: children_pos,
-                }])
-            }
-            _ => Ok(Vec::new()),
+        DokeDocument {
+            nodes,
+            frontmatter: fm_map,
         }
     }
 
-    /// Computes the range of inline content for paragraphs, headings, or list items.
-    /// Includes Text, inline Code, Links, Emphasis, and Wikilinks.
-    fn get_clean_content_position(&self, node: &Node, _source: &str) -> Option<(usize, usize)> {
-        match node {
-            Node::ListItem(_) => {
-                let mut start = usize::MAX;
-                let mut end = 0;
-                if let Some(children) = node.children() {
-                    for child in children {
-                        match child {
-                            Node::Paragraph(_) => {
-                                if let Some((s, e)) = self.get_clean_content_position(child, _source) {
-                                    start = start.min(s);
-                                    end = end.max(e);
-                                }
-                            }
-                            Node::List(_) => {} // block list, excluded
-                            _ => {}
-                        }
-                    }
-                }
-                if start <= end { Some((start, end)) } else { None }
-            }
-            Node::Paragraph(_) | Node::Heading(_) => {
-                let mut start = usize::MAX;
-                let mut end = 0;
-                if let Some(children) = node.children() {
-                    for child in children {
-                        match child {
-                            Node::Text(_) | Node::Code(_) | Node::Link(_) => {
-                                if let Some(pos) = child.position() {
-                                    start = start.min(pos.start.offset);
-                                    end = end.max(pos.end.offset);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                if start <= end { Some((start, end)) } else { None }
-            }
-            Node::Text(_) | Node::Code(_) | Node::Link(_) => {
-                let pos = node.position()?;
-                Some((pos.start.offset, pos.end.offset))
-            }
-            _ => None,
+    /// Optional: allow setting parse options in the future
+    pub fn with_parse_options(mut self, opts: ParseOptions) -> Self {
+        self.parse_options = opts;
+        self
+    }
+}
+
+/// Normalize frontmatter keys: lowercase + spaces → _
+fn normalize_key(key: &str) -> String {
+    key.trim().to_lowercase().replace(' ', "_")
+}
+
+/// Extract frontmatter from a markdown string.
+/// Returns (Some(frontmatter_str), rest_of_markdown) if frontmatter exists.
+fn extract_frontmatter(input: &str) -> (Option<&str>, &str) {
+    let mut parts = input.splitn(3, "---");
+
+    // First part is before the first '---' (likely empty if frontmatter at start)
+    let first = parts.next().unwrap_or("").trim_start();
+
+    // Second part is frontmatter
+    if let Some(fm) = parts.next() {
+        // Third part is the rest of the markdown
+        let rest = parts.next().unwrap_or("").trim_start_matches(|c| c == '\r' || c == '\n');
+        return (Some(fm.trim()), rest);
+    }
+
+    // No frontmatter found
+    (None, input)
+}
+
+
+
+/// Convert yaml_rust2::Yaml → GodotValue
+fn yaml_value_to_godot(y: yaml_rust2::Yaml) -> GodotValue {
+    match y {
+        yaml_rust2::Yaml::String(s) => GodotValue::String(s),
+        yaml_rust2::Yaml::Integer(i) => GodotValue::Int(i),
+        yaml_rust2::Yaml::Real(f) => GodotValue::Float(f.parse().unwrap_or(0.0)),
+        yaml_rust2::Yaml::Boolean(b) => GodotValue::Bool(b),
+        yaml_rust2::Yaml::Array(a) => {
+            GodotValue::Array(a.into_iter().map(yaml_value_to_godot).collect())
         }
+        yaml_rust2::Yaml::Hash(h) => {
+            let mut map = HashMap::new();
+            for (k, v) in h {
+                if let yaml_rust2::Yaml::String(s) = k {
+                    map.insert(normalize_key(&s), yaml_value_to_godot(v));
+                }
+            }
+            GodotValue::Dict(map)
+        }
+        _ => GodotValue::Nil,
     }
 }

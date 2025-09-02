@@ -1,3 +1,8 @@
+---
+some value : 5
+Hey : 66
+---
+
 # Top-level Heading
 Some introductory text.
 
@@ -19,17 +24,13 @@ Some introductory text.
   + Nested plus 1
   + Nested plus 2
 
-- Mixed list start
-  Some paragraph text inside a list item.
-  - Child item under paragraph
-    More text
-  - Another child
-
 ### Heading with inline elements
 - Item with **bold text**
 - Item with *italic text* and a [link](http://example.com)
 
 - Item with `inline code`
 - Item with code block:
-
+    ```
+    This is a code block inside an item !
+    ```
 - Item with a [[Wikilink]]
