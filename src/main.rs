@@ -1,5 +1,5 @@
 use std::io::{self, Read};
-use doke_parser::{parsers, DokePipe};
+use doke::{parsers, DokePipe, GodotValue};
 
 fn main() -> Result<(), std::io::Error> {
     // Read entire stdin into a string
@@ -9,10 +9,12 @@ fn main() -> Result<(), std::io::Error> {
     // Build the pipeline with DebugPrinter included
     let pipe = DokePipe::new()
         .add(parsers::FrontmatterTemplateParser)
-        .add(parsers::DebugPrinter); // prints nodes with emojis
+        .add(parsers::DebugPrinter); // prints nodes with emojis for debugging
 
-    // Run the pipeline on the input Markdown
+    // Run the pipeline on the input Markdown (Mostly for debugging, use validate to get the data !)
     let _doc = pipe.run_markdown(&input);
+    // Get the godot values from the document
+    let _val : Vec<GodotValue> = pipe.validate(&input).unwrap();
     dbg!(_doc);
     Ok(())
 }

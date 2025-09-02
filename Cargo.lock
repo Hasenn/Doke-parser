@@ -98,7 +98,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "doke-parser"
+name = "doke"
 version = "0.1.0"
 dependencies = [
  "lalrpop",

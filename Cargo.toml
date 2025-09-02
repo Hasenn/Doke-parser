@@ -1,7 +1,16 @@
 [package]
-name = "doke-parser"
+name = "doke"  # Names are first-come, first-served :cite[1]:cite[5]
 version = "0.1.0"
 edition = "2024"
+description = "The parsing library of `Dokedex`, a game content authoring tool that uses natural-looking language to define a game's objects. This rust crate defines an API to make `doke` parsers by using a simple pipeline syntax, and provides helpers for things like templating, debugging, and common syntax elements."  # Required :cite[6]
+license = "MIT OR Apache-2.0" 
+authors = ["Eliott Veyrier"]
+documentation = "https://docs.rs/doke"
+homepage = "https://github.com/Hasenn/Doke-parser.git"
+repository = "https://github.com/Hasenn/Doke-parser.git"
+readme = "README.md"
+keywords = ["keyword1", "keyword2", "keyword3"]  # Max 5 :cite[6]
+categories = ["category-slug1", "category-slug2"]  # Use valid slugs from crates.io/category_slugs :cite[6]
 
 [dependencies]
 lalrpop-util = { version = "0.22.2", features = ["lexer"] }
