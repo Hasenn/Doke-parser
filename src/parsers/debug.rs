@@ -1,5 +1,5 @@
+use crate::{DokeNode, DokeParser, GodotValue, semantic::DokeNodeState};
 use std::collections::HashMap;
-use crate::{semantic::DokeNodeState, DokeNode, DokeParser, GodotValue};
 
 /// A parser that prints the node tree for debugging purposes.
 /// Can be added anywhere in a pipeline with `.add(DebugPrinter)`.
@@ -17,7 +17,12 @@ impl DebugPrinter {
 
     fn print_node(node: &DokeNode, indent: usize) {
         let padding = "  ".repeat(indent);
-        println!("{}{} {}", padding, Self::state_emoji(&node.state), node.statement);
+        println!(
+            "{}{} {}",
+            padding,
+            Self::state_emoji(&node.state),
+            node.statement
+        );
 
         for child in &node.children {
             Self::print_node(child, indent + 1);

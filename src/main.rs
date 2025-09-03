@@ -1,5 +1,5 @@
+use doke::{DokePipe, GodotValue, parsers};
 use std::io::{self, Read};
-use doke::{parsers, DokePipe, GodotValue};
 
 fn main() -> Result<(), std::io::Error> {
     // Read entire stdin into a string
@@ -14,7 +14,7 @@ fn main() -> Result<(), std::io::Error> {
     // Run the pipeline on the input Markdown (Mostly for debugging, use validate to get the data !)
     let _doc = pipe.run_markdown(&input);
     // Get the godot values from the document
-    let _val : Vec<GodotValue> = pipe.validate(&input).unwrap();
+    let _val: Vec<GodotValue> = pipe.validate(&input).unwrap();
     dbg!(_doc);
     Ok(())
 }

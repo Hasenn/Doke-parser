@@ -1,10 +1,14 @@
 mod debug;
+mod sentence;
+pub use sentence::SentenceParser;
 pub use debug::DebugPrinter;
-use std::collections::HashMap;
 use regex::Regex;
+use std::collections::HashMap;
 
-
-use crate::{semantic::{DokeNode, DokeParser}, GodotValue};
+use crate::{
+    GodotValue,
+    semantic::{DokeNode, DokeParser},
+};
 
 pub struct FrontmatterTemplateParser;
 

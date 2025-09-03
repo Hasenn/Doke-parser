@@ -2,12 +2,13 @@
 mod base_parser;
 pub mod parsers;
 pub mod semantic;
-use base_parser::{DokeBaseParser, DokeStatement};
-pub use semantic::GodotValue;
-pub use semantic::{DokeNode, DokeParser};
-use std::collections::HashMap;
-use markdown::ParseOptions;
 use crate::semantic::{DokeNodeState, DokeValidate, DokeValidationError};
+use base_parser::{DokeBaseParser, DokeStatement};
+use markdown::ParseOptions;
+pub use semantic::GodotValue;
+pub use semantic::{DokeNode, DokeParser, Hypo, DokeOut};
+use yaml_rust2::yaml::Hash;
+use std::collections::HashMap;
 
 #[derive(Debug)]
 /// Normalized DokeDocument returned from the pipeline
@@ -37,7 +38,7 @@ impl<'a> DokePipe<'a> {
         let mut nodes = doc.nodes;
         DokeValidate::validate_tree(&mut nodes, &doc.frontmatter)
     }
-    
+
     pub fn add<P>(mut self, parser: P) -> Self
     where
         P: DokeParser + 'a,
@@ -96,7 +97,10 @@ impl<'a> DokePipe<'a> {
                 .map(|stmt| {
                     let statement_text = if let Some(pos) = &stmt.statement_position {
                         // Safely slice the input string using byte offsets
-                        input.get(pos.start..pos.end).unwrap_or_default().to_string()
+                        input
+                            .get(pos.start..pos.end)
+                            .unwrap_or_default()
+                            .to_string()
                     } else {
                         "".to_string()
                     };
@@ -105,13 +109,14 @@ impl<'a> DokePipe<'a> {
                         statement: statement_text,
                         state: DokeNodeState::Unresolved,
                         children: statements_to_nodes(&stmt.children, input),
+                        parse_data : HashMap::new(),
+                        constituents : HashMap::new()
                     }
                 })
                 .collect()
         }
 
         let mut nodes = statements_to_nodes(&doc.statements, markdown_str);
-
 
         for parser in &self.parsers {
             for node in nodes.iter_mut() {
@@ -148,15 +153,16 @@ fn extract_frontmatter(input: &str) -> (Option<&str>, &str) {
     // Second part is frontmatter
     if let Some(fm) = parts.next() {
         // Third part is the rest of the markdown
-        let rest = parts.next().unwrap_or("").trim_start_matches(|c| c == '\r' || c == '\n');
+        let rest = parts
+            .next()
+            .unwrap_or("")
+            .trim_start_matches(|c| c == '\r' || c == '\n');
         return (Some(fm.trim()), rest);
     }
 
     // No frontmatter found
     (None, input)
 }
-
-
 
 /// Convert yaml_rust2::Yaml → GodotValue
 fn yaml_value_to_godot(y: yaml_rust2::Yaml) -> GodotValue {
