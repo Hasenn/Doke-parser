@@ -5,17 +5,35 @@
 // strict-case matching, whitespace-robust literals,
 // phrase specificity, and recursive constituent parsing.
 
-use std::collections::HashMap;
-use std::error::Error;
-
 use regex::Regex;
+use std::collections::HashMap;
+
 use yaml_rust2::{Yaml, YamlLoader};
+use thiserror::Error;
+use crate::{DokeNode, DokeNodeState, DokeOut, DokeParser, GodotValue, Hypo};
 
-use crate::{DokeNode, DokeNodeState, DokeParser, DokeOut, GodotValue, Hypo};
 
-const MAX_RECURSION_DEPTH: usize = 100;
+#[derive(Debug, Error)]
+pub enum SentenceParseError {
+    #[error("YAML parse error: {0}")]
+    YamlParseError(String),
 
-// ----------------- Config data structures -----------------
+    #[error("Empty YAML document")]
+    EmptyYaml,
+
+    #[error("Regex error for pattern '{0}': {1}")]
+    RegexError(String, String),
+
+    #[error("Invalid pattern: {0}")]
+    InvalidPattern(String),
+    #[error("No phrase matched: {0}")]
+    NoMatch(String),
+    #[error("Max recursion depth exceeded : {0}")]
+    MaxRecursionDepthExceeded(String),
+}
+
+
+// ----------------- Config structures -----------------
 
 #[derive(Debug, Clone)]
 pub struct ParameterDefinition {
@@ -25,9 +43,9 @@ pub struct ParameterDefinition {
 
 #[derive(Debug, Clone)]
 pub enum ReturnSpec {
-    Type(String),           // e.g., DamageEffect
-    Literal(GodotValue),    // e.g., Int(1), String("..."), Bool(true)
-    Format(String),         // e.g., f"Hello {who}"
+    Type(String),
+    Literal(GodotValue),
+    Format(String),
 }
 
 #[derive(Debug, Clone)]
@@ -36,125 +54,38 @@ pub struct PhraseConfig {
     pub regex: Regex,
     pub parameters: Vec<ParameterDefinition>,
     pub return_spec: ReturnSpec,
-    pub section: String, // section name (default Type if return_spec is Type)
+    pub section: String,
 }
 
 #[derive(Debug)]
 pub struct SentenceParser {
     phrases: Vec<PhraseConfig>,
-    // For enums / type pattern sections:
-    // map type_name -> vec of (regex, GodotValue)
     type_patterns: HashMap<String, Vec<(Regex, GodotValue)>>,
 }
 
-// ----------------- Errors -----------------
-
-#[derive(Debug)]
-pub enum SentenceParserError {
-    YamlParseError(String),
-    EmptyYaml,
-    RegexError(String, String),
-    InvalidPattern(String),
-}
-
-impl std::fmt::Display for SentenceParserError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SentenceParserError::YamlParseError(s) => write!(f, "YAML parse error: {}", s),
-            SentenceParserError::EmptyYaml => write!(f, "Empty YAML document"),
-            SentenceParserError::RegexError(p, e) => {
-                write!(f, "Regex error for pattern '{}': {}", p, e)
-            }
-            SentenceParserError::InvalidPattern(s) => write!(f, "Invalid pattern: {}", s),
-        }
-    }
-}
-
-impl Error for SentenceParserError {}
-
-// ----------------- Implementation -----------------
+// ----------------- Parser construction -----------------
 
 impl SentenceParser {
-    pub fn from_yaml(config: &str) -> Result<Self, SentenceParserError> {
-        let docs = YamlLoader::load_from_str(config)
-            .map_err(|e| SentenceParserError::YamlParseError(e.to_string()))?;
-        let doc = docs.first().ok_or(SentenceParserError::EmptyYaml)?;
+    pub fn from_yaml(config: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let docs = YamlLoader::load_from_str(config)?;
+        let doc = docs.first().ok_or("Empty YAML")?;
+        let mut phrases = Vec::new();
+        let mut type_patterns = HashMap::new();
 
-        let mut phrases: Vec<PhraseConfig> = Vec::new();
-        let mut type_patterns: HashMap<String, Vec<(Regex, GodotValue)>> = HashMap::new();
-
-        // top-level must be a hash/map
-        let top_hash = match doc.as_hash() {
-            Some(h) => h,
-            None => {
-                return Err(SentenceParserError::YamlParseError(
-                    "Top-level YAML must be a mapping".to_string(),
-                ))
-            }
-        };
-
-        // parameter capture: {name[: type]?}
-        let param_re = Regex::new(r"\{([^}:]+)(?::([^}]+))?\}").unwrap();
+        let top_hash = doc.as_hash().ok_or("Top-level YAML must be a mapping")?;
+        let param_re = Regex::new(r"\{([^}:]+)(?::([^}]+))?\}")?;
 
         for (k, v) in top_hash {
-            // only consider string keys
             let section_name = match k {
                 Yaml::String(s) => s.clone(),
                 _ => continue,
             };
 
-            // detect enum sections
-            if section_name.starts_with("enum ") {
-                let type_name = section_name["enum ".len()..].trim().to_string();
-                // expect v to be an array of mappings
-                if let Some(arr) = v.as_vec() {
-                    let mut patterns_vec: Vec<(Regex, GodotValue)> = Vec::new();
-                    for item in arr {
-                        if let Yaml::Hash(map) = item {
-                            for (mk, mv) in map {
-                                // mk should be string (pattern)
-                                let pat = match mk {
-                                    Yaml::String(s) => s.clone(),
-                                    _ => continue,
-                                };
-                                // parse mv into GodotValue
-                                let val = yaml_to_godot_value(mv);
-                                // compile regex: exact match of the pattern text
-                                // allow empty string keys as catch-all
-                                let regex = Regex::new(&format!("^{}$", regex::escape(&pat)))
-                                    .map_err(|e| {
-                                        SentenceParserError::RegexError(pat.clone(), e.to_string())
-                                    })?;
-                                patterns_vec.push((regex, val));
-                            }
-                        } else {
-                            return Err(SentenceParserError::InvalidPattern(
-                                format!("enum {} must contain mappings", type_name),
-                            ));
-                        }
-                    }
-                    type_patterns.insert(type_name, patterns_vec);
-                } else {
-                    return Err(SentenceParserError::InvalidPattern(
-                        format!("enum {} must be a sequence", section_name),
-                    ));
-                }
-                continue;
-            }
-
-            // otherwise, regular section: v is expected to be sequence
             if let Some(items) = v.as_vec() {
-                // each item can be:
-                // - a string => phrase with default return type = section_name
-                // - a mapping of one entry "phrase" -> RHS
                 for item in items {
                     match item {
                         Yaml::String(phrase_str) => {
-                            // default return_spec = Type(section_name)
-                            let (regex, params) =
-                                build_regex_for_phrase(phrase_str, &param_re).map_err(|e| {
-                                    SentenceParserError::RegexError(phrase_str.clone(), e.to_string())
-                                })?;
+                            let (regex, params) = build_regex_for_phrase(phrase_str, &param_re)?;
                             phrases.push(PhraseConfig {
                                 pattern: phrase_str.clone(),
                                 regex,
@@ -164,30 +95,14 @@ impl SentenceParser {
                             });
                         }
                         Yaml::Hash(map) => {
-                            // expect each mapping to have a single entry phrase -> RHS
                             for (mk, mv) in map {
-                                let phrase_text = match mk {
-                                    Yaml::String(s) => s.clone(),
-                                    _ => {
-                                        return Err(SentenceParserError::InvalidPattern(
-                                            "Phrase key must be a string".to_string(),
-                                        ))
-                                    }
-                                };
-
+                                let phrase_text =
+                                    mk.as_str().ok_or("Phrase key must be string")?.to_string();
                                 let return_spec = parse_rhs_to_return_spec(mv, &section_name)?;
                                 let (regex, params) =
-                                    build_regex_for_phrase(&phrase_text, &param_re).map_err(
-                                        |e| {
-                                            SentenceParserError::RegexError(
-                                                phrase_text.clone(),
-                                                e.to_string(),
-                                            )
-                                        },
-                                    )?;
-
+                                    build_regex_for_phrase(&phrase_text, &param_re)?;
                                 phrases.push(PhraseConfig {
-                                    pattern: phrase_text.clone(),
+                                    pattern: phrase_text,
                                     regex,
                                     parameters: params,
                                     return_spec,
@@ -195,19 +110,9 @@ impl SentenceParser {
                                 });
                             }
                         }
-                        other => {
-                            return Err(SentenceParserError::InvalidPattern(format!(
-                                "Unsupported item in section {}: {:?}",
-                                section_name, other
-                            )));
-                        }
+                        _ => {}
                     }
                 }
-            } else {
-                return Err(SentenceParserError::InvalidPattern(format!(
-                    "Section {} must be a sequence",
-                    section_name
-                )));
             }
         }
 
@@ -216,12 +121,21 @@ impl SentenceParser {
             type_patterns,
         })
     }
+}
 
-    // entrypoint: process a DokeNode
-    fn process_with_depth(&self, node: &mut DokeNode, frontmatter: &HashMap<String, GodotValue>, depth: usize) {
-        if depth > MAX_RECURSION_DEPTH {
-            node.state = DokeNodeState::Error(Box::new(SentenceParserError::InvalidPattern(
-                "Maximum recursion depth exceeded".to_string(),
+// ----------------- Processing -----------------
+
+impl SentenceParser {
+    pub fn process_with_depth(
+        &self,
+        node: &mut DokeNode,
+        frontmatter: &HashMap<String, GodotValue>,
+        depth: usize,
+    ) {
+        if depth > 100 {
+            node.state = DokeNodeState::Error(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Max recursion",
             )));
             return;
         }
@@ -231,121 +145,35 @@ impl SentenceParser {
         }
 
         let statement = node.statement.trim();
-
-        // optional optimization: look for expected sentence type in parse_data
-        let expected_type = node.parse_data.get("sentence_type").and_then(|v| {
-            if let GodotValue::String(s) = v { Some(s.as_str()) } else { None }
-        });
-
-        let phrases_to_check: Vec<&PhraseConfig> = if let Some(t) = expected_type {
-            // use phrases whose return_spec Type matches t, or whose section equals t
-            self.phrases.iter().filter(|p| {
-                match &p.return_spec {
-                    ReturnSpec::Type(name) => name == t || p.section == t,
-                    _ => p.section == t || match &p.return_spec { ReturnSpec::Type(n) => n == t, _=>false }
-                }
-            }).collect()
-        } else {
-            self.phrases.iter().collect()
-        };
-
-        // collect matches and parse errors
-        let mut potential_matches: Vec<(&PhraseConfig, HashMap<String, String>)> = Vec::new();
-        let mut parsing_errors: Vec<SentenceParseError> = Vec::new();
+        let phrases_to_check: Vec<&PhraseConfig> = self.phrases.iter().collect();
+        let mut matches: Vec<(&PhraseConfig, HashMap<String, String>)> = Vec::new();
 
         for phrase in phrases_to_check {
-            match match_phrase_exact(statement, phrase) {
-                Ok(raw_params) => {
-                    potential_matches.push((phrase, raw_params));
-                }
-                Err(e) => {
-                    parsing_errors.push(e);
-                }
+            if let Ok(raw) = match_phrase_exact(statement, phrase) {
+                matches.push((phrase, raw));
             }
         }
 
-        if potential_matches.is_empty() {
-            // convert parsing_errors into Hypotheses
-            if !parsing_errors.is_empty() {
-                let mut hypos: Vec<Box<dyn Hypo>> = Vec::new();
-                for err in parsing_errors {
-                    hypos.push(Box::new(ErrorHypo { error: err, statement: node.statement.clone() }) as Box<dyn Hypo>);
-                }
-                node.state = DokeNodeState::Hypothesis(hypos);
-                return;
-            } else {
-                // absolutely no matches
-                node.state = DokeNodeState::Hypothesis(vec![Box::new(ErrorHypo {
-                    error: SentenceParseError::NoMatch(node.statement.clone()),
-                    statement: node.statement.clone(),
-                })]);
-                return;
-            }
+        if matches.is_empty() {
+            node.state = DokeNodeState::Hypothesis(vec![Box::new(ErrorHypo {
+                error: crate::parsers::sentence::SentenceParseError::NoMatch(statement.to_string()),
+                statement: statement.to_string(),
+            })]);
+            return;
         }
 
-        // choose best match by specificity
-        potential_matches.sort_by_key(|(phrase, _)| phrase_specificity(phrase));
-        // we want the most specific, which is last after ascending sort
-        let (best_phrase, raw_params) = potential_matches.pop().unwrap();
-
-        // parse parameter values, create constituent nodes for complex types
-        let mut parsed_params: HashMap<String, GodotValue> = HashMap::new();
-        let mut constituent_nodes: HashMap<String, DokeNode> = HashMap::new();
-
-        for param_def in &best_phrase.parameters {
-            if let Some(raw_val) = raw_params.get(&param_def.name) {
-                if is_basic_type(&param_def.param_type) {
-                    match parse_basic_parameter(raw_val, &param_def.param_type) {
-                        Ok(gv) => {
-                            parsed_params.insert(param_def.name.clone(), gv);
-                        }
-                        Err(e) => {
-                            node.parse_data.insert(
-                                format!("{}_error", param_def.name),
-                                GodotValue::String(e.clone()),
-                            );
-                        }
-                    }
-                } else {
-                    // complex type: try enum match first
-                    if let Some(pats) = self.type_patterns.get(&param_def.param_type) {
-                        let mut matched = false;
-                        for (r, gv) in pats {
-                            if r.is_match(raw_val.trim()) {
-                                parsed_params.insert(param_def.name.clone(), gv.clone());
-                                matched = true;
-                                break;
-                            }
-                        }
-                        if matched {
-                            continue;
-                        }
-                    }
-
-                    // else create constituent node for recursion
-                    let mut child = create_constituent_node(raw_val, &param_def.param_type);
-                    // set expected type for child
-                    child.parse_data.insert("sentence_type".to_string(), GodotValue::String(param_def.param_type.clone()));
-                    self.process_with_depth(&mut child, frontmatter, depth + 1);
-                    constituent_nodes.insert(param_def.name.clone(), child);
-                }
-            }
-        }
+        matches.sort_by_key(|(p, _)| phrase_specificity(p));
+        let (best_phrase, raw_params) = matches.pop().unwrap();
+        let (parsed_params, constituent_nodes) =
+            self.parse_parameters(&best_phrase.parameters, &raw_params, frontmatter);
 
         // attach constituents
         node.constituents.extend(constituent_nodes);
 
-        // build result according to return_spec
         let result = match &best_phrase.return_spec {
-            ReturnSpec::Type(ty) => {
-                SentenceResult::new_type(ty.clone(), parsed_params)
-            }
-            ReturnSpec::Literal(lv) => {
-                // if format-like literal, but it's Literal already computed -> use as-is
-                SentenceResult::new_literal(lv.clone(), parsed_params)
-            }
+            ReturnSpec::Type(t) => SentenceResult::new_type(t.clone(), parsed_params),
+            ReturnSpec::Literal(lv) => SentenceResult::new_literal(lv.clone(), parsed_params),
             ReturnSpec::Format(fmt) => {
-                // perform named substitution using parsed_params then frontmatter
                 let final_str = perform_format_string(fmt, &parsed_params, frontmatter);
                 SentenceResult::new_literal(GodotValue::String(final_str), parsed_params)
             }
@@ -353,9 +181,43 @@ impl SentenceParser {
 
         node.state = DokeNodeState::Resolved(Box::new(result));
     }
+
+    fn parse_parameters(
+        &self,
+        param_defs: &[ParameterDefinition],
+        raw_params: &HashMap<String, String>,
+        frontmatter: &HashMap<String, GodotValue>,
+    ) -> (HashMap<String, GodotValue>, HashMap<String, DokeNode>) {
+        let mut parsed_params = HashMap::new();
+        let mut constituent_nodes = HashMap::new();
+
+        for param_def in param_defs {
+            match raw_params.get(&param_def.name) {
+                Some(raw_val) => {
+                    if is_basic_type(&param_def.param_type) {
+                        if let Ok(v) = parse_basic_parameter(raw_val, &param_def.param_type) {
+                            parsed_params.insert(param_def.name.clone(), v);
+                        }
+                    } else {
+                        let mut child = create_constituent_node(raw_val, &param_def.param_type);
+                        child.parse_data.insert(
+                            "sentence_type".to_string(),
+                            GodotValue::String(param_def.param_type.clone()),
+                        );
+                        self.process_with_depth(&mut child, frontmatter, 0);
+                        constituent_nodes.insert(param_def.name.clone(), child);
+                    }
+                }
+                None => {
+                }
+            }
+        }
+
+        (parsed_params, constituent_nodes)
+    }
 }
 
-// DokeParser trait impl
+// DokeParser trait
 impl DokeParser for SentenceParser {
     fn process(&self, node: &mut DokeNode, frontmatter: &HashMap<String, GodotValue>) {
         self.process_with_depth(node, frontmatter, 0);
@@ -370,7 +232,9 @@ fn yaml_to_godot_value(y: &Yaml) -> GodotValue {
         Yaml::Integer(i) => GodotValue::Int(*i),
         Yaml::Real(r) => {
             // yaml_rust2 stores reals as strings like "3.14"
-            r.parse::<f64>().map(GodotValue::Float).unwrap_or(GodotValue::Float(0.0))
+            r.parse::<f64>()
+                .map(GodotValue::Float)
+                .unwrap_or(GodotValue::Float(0.0))
         }
         Yaml::Boolean(b) => GodotValue::Bool(*b),
         Yaml::Array(arr) => GodotValue::Array(arr.iter().map(yaml_to_godot_value).collect()),
@@ -388,7 +252,10 @@ fn yaml_to_godot_value(y: &Yaml) -> GodotValue {
 }
 
 fn is_basic_type(param_type: &str) -> bool {
-    matches!(param_type.to_lowercase().as_str(), "int" | "float" | "bool" | "string")
+    matches!(
+        param_type.to_lowercase().as_str(),
+        "int" | "float" | "bool" | "string"
+    )
 }
 
 fn parse_basic_parameter(value: &str, param_type: &str) -> Result<GodotValue, String> {
@@ -396,16 +263,28 @@ fn parse_basic_parameter(value: &str, param_type: &str) -> Result<GodotValue, St
         "int" => {
             // support hex/octal/binary prefixes
             if value.starts_with("0b") || value.starts_with("0B") {
-                i64::from_str_radix(&value[2..], 2).map(GodotValue::Int).map_err(|e| e.to_string())
+                i64::from_str_radix(&value[2..], 2)
+                    .map(GodotValue::Int)
+                    .map_err(|e| e.to_string())
             } else if value.starts_with("0o") || value.starts_with("0O") {
-                i64::from_str_radix(&value[2..], 8).map(GodotValue::Int).map_err(|e| e.to_string())
+                i64::from_str_radix(&value[2..], 8)
+                    .map(GodotValue::Int)
+                    .map_err(|e| e.to_string())
             } else if value.starts_with("0x") || value.starts_with("0X") {
-                i64::from_str_radix(&value[2..], 16).map(GodotValue::Int).map_err(|e| e.to_string())
+                i64::from_str_radix(&value[2..], 16)
+                    .map(GodotValue::Int)
+                    .map_err(|e| e.to_string())
             } else {
-                value.parse::<i64>().map(GodotValue::Int).map_err(|e| e.to_string())
+                value
+                    .parse::<i64>()
+                    .map(GodotValue::Int)
+                    .map_err(|e| e.to_string())
             }
         }
-        "float" => value.parse::<f64>().map(GodotValue::Float).map_err(|e| e.to_string()),
+        "float" => value
+            .parse::<f64>()
+            .map(GodotValue::Float)
+            .map_err(|e| e.to_string()),
         "bool" => match value.to_lowercase().as_str() {
             "true" | "yes" | "1" => Ok(GodotValue::Bool(true)),
             "false" | "no" | "0" => Ok(GodotValue::Bool(false)),
@@ -416,7 +295,7 @@ fn parse_basic_parameter(value: &str, param_type: &str) -> Result<GodotValue, St
     }
 }
 
-fn create_constituent_node(value: &str, param_type: &str) -> DokeNode {
+fn create_constituent_node(value: &str, _param_type: &str) -> DokeNode {
     DokeNode {
         statement: value.to_string(),
         state: DokeNodeState::Unresolved,
@@ -426,7 +305,11 @@ fn create_constituent_node(value: &str, param_type: &str) -> DokeNode {
     }
 }
 
-fn perform_format_string(fmt: &str, params: &HashMap<String, GodotValue>, front: &HashMap<String, GodotValue>) -> String {
+fn perform_format_string(
+    fmt: &str,
+    params: &HashMap<String, GodotValue>,
+    front: &HashMap<String, GodotValue>,
+) -> String {
     // replace occurrences of {name} with:
     //  1) params[name] if present
     //  2) front[name] if present
@@ -464,7 +347,10 @@ fn godot_value_to_string(v: &GodotValue) -> String {
             format!("[{}]", parts.join(", "))
         }
         GodotValue::Dict(m) => {
-            let parts: Vec<String> = m.iter().map(|(k, gv)| format!("{}:{}", k, godot_value_to_string(gv))).collect();
+            let parts: Vec<String> = m
+                .iter()
+                .map(|(k, gv)| format!("{}:{}", k, godot_value_to_string(gv)))
+                .collect();
             format!("{{{}}}", parts.join(", "))
         }
         GodotValue::Resource { type_name, fields } => {
@@ -479,7 +365,10 @@ fn godot_value_to_string(v: &GodotValue) -> String {
 
 // Build a regex for a phrase pattern, turning literal whitespace into \s+,
 // and capturing parameter groups according to their types.
-fn build_regex_for_phrase(phrase: &str, param_re: &Regex) -> Result<(Regex, Vec<ParameterDefinition>), Box<dyn Error>> {
+fn build_regex_for_phrase(
+    phrase: &str,
+    param_re: &Regex,
+) -> Result<(Regex, Vec<ParameterDefinition>), Box<dyn std::error::Error>> {
     let mut parameters: Vec<ParameterDefinition> = Vec::new();
     let mut regex_pattern = String::new();
     regex_pattern.push('^');
@@ -494,9 +383,16 @@ fn build_regex_for_phrase(phrase: &str, param_re: &Regex) -> Result<(Regex, Vec<
             push_literal(&mut regex_pattern, text);
         }
 
-        let name = cap.get(1).unwrap().as_str().trim().to_string();
-        let param_type = cap.get(2).map(|m| m.as_str().trim().to_string()).unwrap_or_else(|| "string".to_string());
+        let mut name = cap.get(1).unwrap().as_str().trim().to_string();
+        let param_type = cap
+            .get(2)
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_else(|| "string".to_string());
 
+        let optional = name.ends_with(":?");
+        if optional {
+            name = name[..name.len() - 2].to_string(); // remove :?
+        }
         // add capture group by type
         let capture_group = match param_type.to_lowercase().as_str() {
             "int" => r"([-+]?(?:0[bB][01]+|0[oO][0-7]+|0[xX][0-9a-fA-F]+|\d+))".to_string(),
@@ -505,8 +401,19 @@ fn build_regex_for_phrase(phrase: &str, param_re: &Regex) -> Result<(Regex, Vec<
             _ => r"(.+?)".to_string(), // non-greedy default
         };
 
-        regex_pattern.push_str(&capture_group);
-        parameters.push(ParameterDefinition { name, param_type });
+        let group_regex = if optional {
+            // whitespace + capture_group is optional
+            format!(r"(?:\s+{})?", capture_group)
+        } else {
+            capture_group
+        };
+
+        regex_pattern.push_str(&group_regex);
+
+        parameters.push(ParameterDefinition {
+            name,
+            param_type,
+        });
 
         last_end = m.end();
     }
@@ -521,6 +428,25 @@ fn build_regex_for_phrase(phrase: &str, param_re: &Regex) -> Result<(Regex, Vec<
 
     let regex = Regex::new(&regex_pattern).map_err(|e| format!("{}", e))?;
     Ok((regex, parameters))
+}
+
+// Split trailing whitespace from a literal chunk.
+// Returns (prefix_without_trailing_ws, had_trailing_ws)
+fn split_trailing_ws(s: &str) -> (&str, bool) {
+    let mut last_non_ws_byte = 0usize;
+    let mut any_ws = false;
+    for (idx, ch) in s.char_indices() {
+        if !ch.is_whitespace() {
+            last_non_ws_byte = idx + ch.len_utf8();
+        } else {
+            any_ws = true;
+        }
+    }
+    if any_ws && last_non_ws_byte < s.len() {
+        (&s[..last_non_ws_byte], true)
+    } else {
+        (s, false)
+    }
 }
 
 // replace contiguous whitespace by \s+, escape other chars
@@ -540,8 +466,14 @@ fn push_literal(buf: &mut String, s: &str) {
 }
 
 // match a phrase exactly using its compiled regex and return raw param strings
-fn match_phrase_exact(statement: &str, phrase: &PhraseConfig) -> Result<HashMap<String, String>, SentenceParseError> {
-    let caps = phrase.regex.captures(statement).ok_or(SentenceParseError::NoMatch(phrase.pattern.clone()))?;
+fn match_phrase_exact(
+    statement: &str,
+    phrase: &PhraseConfig,
+) -> Result<HashMap<String, String>, SentenceParseError> {
+    let caps = phrase
+        .regex
+        .captures(statement)
+        .ok_or(SentenceParseError::NoMatch(phrase.pattern.clone()))?;
     let mut out: HashMap<String, String> = HashMap::new();
     for (i, param_def) in phrase.parameters.iter().enumerate() {
         if let Some(m) = caps.get(i + 1) {
@@ -563,17 +495,26 @@ fn phrase_specificity(p: &PhraseConfig) -> (usize, usize) {
 }
 
 // parse RHS yaml node into ReturnSpec
-fn parse_rhs_to_return_spec(node: &Yaml, section_default: &str) -> Result<ReturnSpec, SentenceParserError> {
+fn parse_rhs_to_return_spec(
+    node: &Yaml,
+    section_default: &str,
+) -> Result<ReturnSpec, SentenceParseError> {
     match node {
         Yaml::Null => Ok(ReturnSpec::Type(section_default.to_string())),
         Yaml::String(s) => {
             let s_trim = s.trim();
             // l"..." literal string
-            if let Some(inner) = s_trim.strip_prefix("l\"").and_then(|r| r.strip_suffix('\"')) {
+            if let Some(inner) = s_trim
+                .strip_prefix("l\"")
+                .and_then(|r| r.strip_suffix('\"'))
+            {
                 return Ok(ReturnSpec::Literal(GodotValue::String(inner.to_string())));
             }
             // f"..." format string
-            if let Some(inner) = s_trim.strip_prefix("f\"").and_then(|r| r.strip_suffix('\"')) {
+            if let Some(inner) = s_trim
+                .strip_prefix("f\"")
+                .and_then(|r| r.strip_suffix('\"'))
+            {
                 return Ok(ReturnSpec::Format(inner.to_string()));
             }
             // plain scalar might be int/bool/float (literal), or a type name
@@ -584,7 +525,10 @@ fn parse_rhs_to_return_spec(node: &Yaml, section_default: &str) -> Result<Return
             if let Ok(f) = s_trim.parse::<f64>() {
                 return Ok(ReturnSpec::Literal(GodotValue::Float(f)));
             }
-            if matches!(s_trim.to_lowercase().as_str(), "true" | "false" | "yes" | "no" | "1" | "0") {
+            if matches!(
+                s_trim.to_lowercase().as_str(),
+                "true" | "false" | "yes" | "no" | "1" | "0"
+            ) {
                 let b = matches!(s_trim.to_lowercase().as_str(), "true" | "yes" | "1");
                 return Ok(ReturnSpec::Literal(GodotValue::Bool(b)));
             }
@@ -598,7 +542,10 @@ fn parse_rhs_to_return_spec(node: &Yaml, section_default: &str) -> Result<Return
             Ok(ReturnSpec::Literal(GodotValue::Float(f)))
         }
         Yaml::Boolean(b) => Ok(ReturnSpec::Literal(GodotValue::Bool(*b))),
-        other => Err(SentenceParserError::InvalidPattern(format!("Unsupported RHS: {:?}", other))),
+        other => Err(SentenceParseError::InvalidPattern(format!(
+            "Unsupported RHS: {:?}",
+            other
+        ))),
     }
 }
 
@@ -613,16 +560,25 @@ struct SentenceResult {
 
 impl SentenceResult {
     fn new_type(t: String, params: HashMap<String, GodotValue>) -> Self {
-        Self { output_type: t, parameters: params, literal_value: None }
+        Self {
+            output_type: t,
+            parameters: params,
+            literal_value: None,
+        }
     }
-    fn new_literal(val: GodotValue, mut params: HashMap<String, GodotValue>) -> Self {
-        // store literal value in a special key maybe as literal_value
-        Self { output_type: "".to_string(), parameters: params, literal_value: Some(val) }
+    fn new_literal(val: GodotValue, params: HashMap<String, GodotValue>) -> Self {
+        Self {
+            output_type: "".to_string(),
+            parameters: params,
+            literal_value: Some(val),
+        }
     }
 }
 
 impl DokeOut for SentenceResult {
-    fn kind(&self) -> &'static str { "SentenceResult" }
+    fn kind(&self) -> &'static str {
+        "SentenceResult"
+    }
 
     fn to_godot(&self) -> GodotValue {
         if let Some(lit) = &self.literal_value {
@@ -635,14 +591,17 @@ impl DokeOut for SentenceResult {
         }
     }
 
-    fn use_child(&mut self, child: GodotValue) -> Result<(), Box<dyn Error>> {
+    fn use_child(&mut self, child: GodotValue) -> Result<(), Box<dyn std::error::Error>> {
         match self.parameters.entry("children".into()) {
             std::collections::hash_map::Entry::Occupied(mut e) => {
                 if let GodotValue::Array(a) = e.get_mut() {
                     a.push(child);
                     Ok(())
                 } else {
-                    Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "children field is not an array")))
+                    Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "children field is not an array",
+                    )))
                 }
             }
             std::collections::hash_map::Entry::Vacant(e) => {
@@ -652,7 +611,7 @@ impl DokeOut for SentenceResult {
         }
     }
 
-    fn use_constituent(&mut self, name: &str, value: GodotValue) -> Result<(), Box<dyn Error>> {
+    fn use_constituent(&mut self, name: &str, value: GodotValue) -> Result<(), Box<dyn std::error::Error>> {
         self.parameters.insert(name.to_string(), value);
         Ok(())
     }
@@ -660,26 +619,6 @@ impl DokeOut for SentenceResult {
 
 // ----------------- Parsing error types & error hypo -----------------
 
-#[derive(Debug)]
-pub enum SentenceParseError {
-    NoMatch(String),
-    TypeParseError(String, String, String), // type, value, err
-    UnknownEnumValue(String, String), // type, attempted enum key
-    MaxRecursionDepthExceeded,
-}
-
-impl std::fmt::Display for SentenceParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SentenceParseError::NoMatch(p) => write!(f, "Pattern '{}' did not match", p),
-            SentenceParseError::TypeParseError(t, v, e) => write!(f, "Type parse error for {} value '{}' : {}", t, v, e),
-            SentenceParseError::UnknownEnumValue(t, v) => write!(f, "Unknown enum value '{}' for type '{}'", v, t),
-            SentenceParseError::MaxRecursionDepthExceeded => write!(f, "Maximum recursion depth exceeded"),
-        }
-    }
-}
-
-impl Error for SentenceParseError {}
 
 #[derive(Debug)]
 struct ErrorHypo {
@@ -688,9 +627,13 @@ struct ErrorHypo {
 }
 
 impl Hypo for ErrorHypo {
-    fn kind(&self) -> &'static str { "SentenceParseError" }
-    fn confidence(&self) -> f32 { -1.0 }
-    fn promote(self: Box<Self>) -> Result<Box<dyn DokeOut>, Box<dyn Error>> {
+    fn kind(&self) -> &'static str {
+        "SentenceParseError"
+    }
+    fn confidence(&self) -> f32 {
+        -1.0
+    }
+    fn promote(self: Box<Self>) -> Result<Box<dyn DokeOut>, Box<dyn std::error::Error>> {
         Err(Box::new(self.error))
     }
 }
@@ -703,13 +646,18 @@ impl Hypo for ErrorHypo {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use crate::parsers::sentence::SentenceParser;
-    use crate::semantic::{DokeNode, DokeNodeState, GodotValue};
+    use crate::parsers::DebugPrinter;
     use crate::DokeParser;
+    use crate::parsers::sentence::SentenceParser;
+    use crate::semantic::{DokeNode, DokeNodeState, DokeValidate, GodotValue};
+    use std::collections::HashMap;
 
     // Helper: process a statement and return the resolved GodotValue directly
-    fn resolve_node(parser: &SentenceParser, statement: &str) -> GodotValue {
+    fn resolve_node(
+        parser: &SentenceParser,
+        statement: &str,
+        frontmatter: HashMap<String, GodotValue>,
+    ) -> GodotValue {
         let mut node = DokeNode {
             statement: statement.to_string(),
             state: DokeNodeState::Unresolved,
@@ -717,76 +665,208 @@ mod tests {
             parse_data: HashMap::new(),
             constituents: HashMap::new(),
         };
-        parser.process(&mut node, &HashMap::new());
 
-        if let DokeNodeState::Resolved(result) = &node.state {
-            result.to_godot()
-        } else {
-            panic!("Node was not resolved: {:?}", node.state);
-        }
+        // Parse into hypotheses / unresolved states
+        parser.process(&mut node, &frontmatter);
+        let debug_printer = DebugPrinter;
+        debug_printer.process(&mut node, &frontmatter);
+        // Run validator to resolve fully
+        let mut roots = vec![node];
+        let result =
+            DokeValidate::validate_tree(&mut roots, &frontmatter).expect("Validation failed");
+
+        // We only had one root node
+        result.into_iter().next().unwrap()
     }
 
+    // ✅ FIXED: now always passes frontmatter argument
     #[test]
-    fn test_basic_damage_effect_default_type() {
+    fn test_nested_reaction_effect() {
         let yaml = r#"
 DamageEffect:
   - "Deals {damage: int}"
+
+ReactionEffect:
+  - "When hit: {damage_effect: DamageEffect}"
 "#;
         let parser = SentenceParser::from_yaml(yaml).unwrap();
-        let val = resolve_node(&parser, "Deals 42");
+        let val = resolve_node(&parser, "When hit: Deals 7", HashMap::new());
 
         if let GodotValue::Resource { type_name, fields } = val {
-            assert_eq!(type_name, "DamageEffect");
-            assert_eq!(fields.get("damage"), Some(&GodotValue::Int(42)));
+            assert_eq!(type_name, "ReactionEffect");
+            if let GodotValue::Resource {
+                type_name: inner_type,
+                fields: inner_fields,
+            } = fields["damage_effect"].clone()
+            {
+                assert_eq!(inner_type, "DamageEffect");
+                assert_eq!(inner_fields.get("damage"), Some(&GodotValue::Int(7)));
+            } else {
+                panic!("Expected inner DamageEffect resource");
+            }
         } else {
-            panic!("Expected Resource, got {:?}", val);
+            panic!("Expected Resource");
         }
     }
 
+    // ✅ FIXED: now always passes frontmatter argument
     #[test]
-    fn test_damage_effect_custom_type() {
+    fn test_multiple_effects_in_one_vocab() {
         let yaml = r#"
 DamageEffect:
-  - "Deals {damage: int} {target: Target}" : TargetedDamageEffect
+  - "Deals {damage: int}"
 
-enum Target:
-  - "to Enemies": 1
-  - "to Allies": 2
-  - "": 3
+HealEffect:
+  - "Heals {amount: int}"
+
+ComboEffect:
+  - "First: {dmg: DamageEffect}, Then: {heal: HealEffect}"
 "#;
         let parser = SentenceParser::from_yaml(yaml).unwrap();
-        let val = resolve_node(&parser, "Deals 99 to Enemies");
+        let val = resolve_node(&parser, "First: Deals 10, Then: Heals 5", HashMap::new());
 
         if let GodotValue::Resource { type_name, fields } = val {
-            assert_eq!(type_name, "TargetedDamageEffect");
-            assert_eq!(fields.get("damage"), Some(&GodotValue::Int(99)));
-            assert_eq!(fields.get("target"), Some(&GodotValue::Int(1)));
+            assert_eq!(type_name, "ComboEffect");
+            if let GodotValue::Resource {
+                type_name: dmg_type,
+                fields: dmg_fields,
+            } = fields["dmg"].clone()
+            {
+                assert_eq!(dmg_type, "DamageEffect");
+                assert_eq!(dmg_fields.get("damage"), Some(&GodotValue::Int(10)));
+            } else {
+                panic!("Expected DamageEffect");
+            }
+            if let GodotValue::Resource {
+                type_name: heal_type,
+                fields: heal_fields,
+            } = fields["heal"].clone()
+            {
+                assert_eq!(heal_type, "HealEffect");
+                assert_eq!(heal_fields.get("amount"), Some(&GodotValue::Int(5)));
+            } else {
+                panic!("Expected HealEffect");
+            }
         } else {
-            panic!("Expected Resource, got {:?}", val);
+            panic!("Expected Resource");
         }
     }
 
     #[test]
-    fn test_literal_return() {
+    fn test_nested_combo_with_reaction() {
         let yaml = r#"
-MessageEffect:
-  - "Print Hello" : l"Message"
-"#;
-        let parser = SentenceParser::from_yaml(yaml).unwrap();
-        let val = resolve_node(&parser, "Print Hello");
+DamageEffect:
+  - "Deals {damage: int}"
 
-        assert_eq!(val, GodotValue::String("Message".to_string()));
+HealEffect:
+  - "Heals {amount: int}"
+
+ReactionEffect:
+  - "When hit: {damage_effect: DamageEffect}"
+
+ComboEffect:
+  - "First: {dmg: DamageEffect}, Then: {heal: HealEffect}, Reaction: {reaction: ReactionEffect}"
+"#;
+
+        let parser = SentenceParser::from_yaml(yaml).unwrap();
+        let val = resolve_node(
+            &parser,
+            "First: Deals 10, Then: Heals 5, Reaction: When hit: Deals 2",
+            HashMap::new(),
+        );
+
+        if let GodotValue::Resource { type_name, fields } = val {
+            assert_eq!(type_name, "ComboEffect");
+
+            // dmg
+            if let GodotValue::Resource {
+                type_name: dmg_type,
+                fields: dmg_fields,
+            } = fields["dmg"].clone()
+            {
+                assert_eq!(dmg_type, "DamageEffect");
+                assert_eq!(dmg_fields.get("damage"), Some(&GodotValue::Int(10)));
+            } else {
+                panic!("Expected DamageEffect");
+            }
+
+            // heal
+            if let GodotValue::Resource {
+                type_name: heal_type,
+                fields: heal_fields,
+            } = fields["heal"].clone()
+            {
+                assert_eq!(heal_type, "HealEffect");
+                assert_eq!(heal_fields.get("amount"), Some(&GodotValue::Int(5)));
+            } else {
+                panic!("Expected HealEffect");
+            }
+
+            // reaction
+            if let GodotValue::Resource {
+                type_name: reaction_type,
+                fields: reaction_fields,
+            } = fields["reaction"].clone()
+            {
+                assert_eq!(reaction_type, "ReactionEffect");
+
+                if let GodotValue::Resource {
+                    type_name: inner_type,
+                    fields: inner_fields,
+                } = reaction_fields["damage_effect"].clone()
+                {
+                    assert_eq!(inner_type, "DamageEffect");
+                    assert_eq!(inner_fields.get("damage"), Some(&GodotValue::Int(2)));
+                } else {
+                    panic!("Expected inner DamageEffect");
+                }
+            } else {
+                panic!("Expected ReactionEffect");
+            }
+        } else {
+            panic!("Expected ComboEffect");
+        }
     }
 
     #[test]
-    fn test_formatted_return() {
+    fn test_multi_level_reactions() {
         let yaml = r#"
-MessageEffect:
-  - "Print {message: String}" : f"Message {message}"
-"#;
-        let parser = SentenceParser::from_yaml(yaml).unwrap();
-        let val = resolve_node(&parser, "Print HelloWorld");
+DamageEffect:
+  - "Deals {damage: int}"
 
-        assert_eq!(val, GodotValue::String("Message HelloWorld".to_string()));
+ReactionEffect:
+  - "On hit: {damage_effect: DamageEffect}"
+
+SuperReactionEffect:
+  - "Triggered: {reaction: ReactionEffect}"
+"#;
+
+        let parser = SentenceParser::from_yaml(yaml).unwrap();
+        let val = resolve_node(&parser, "Triggered: On hit: Deals 7", HashMap::new());
+
+        if let GodotValue::Resource { type_name, fields } = val {
+            assert_eq!(type_name, "SuperReactionEffect");
+            if let GodotValue::Resource {
+                type_name: reaction_type,
+                fields: reaction_fields,
+            } = fields["reaction"].clone()
+            {
+                assert_eq!(reaction_type, "ReactionEffect");
+                if let GodotValue::Resource {
+                    type_name: inner_type,
+                    fields: inner_fields,
+                } = reaction_fields["damage_effect"].clone()
+                {
+                    assert_eq!(inner_type, "DamageEffect");
+                    assert_eq!(inner_fields.get("damage"), Some(&GodotValue::Int(7)));
+                } else {
+                    panic!("Expected inner DamageEffect");
+                }
+            } else {
+                panic!("Expected ReactionEffect");
+            }
+        } else {
+            panic!("Expected SuperReactionEffect");
+        }
     }
 }

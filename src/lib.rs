@@ -6,9 +6,9 @@ use crate::semantic::{DokeNodeState, DokeValidate, DokeValidationError};
 use base_parser::{DokeBaseParser, DokeStatement};
 use markdown::ParseOptions;
 pub use semantic::GodotValue;
-pub use semantic::{DokeNode, DokeParser, Hypo, DokeOut};
-use yaml_rust2::yaml::Hash;
+pub use semantic::{DokeNode, DokeOut, DokeParser, Hypo};
 use std::collections::HashMap;
+use yaml_rust2::yaml::Hash;
 
 #[derive(Debug)]
 /// Normalized DokeDocument returned from the pipeline
@@ -109,8 +109,8 @@ impl<'a> DokePipe<'a> {
                         statement: statement_text,
                         state: DokeNodeState::Unresolved,
                         children: statements_to_nodes(&stmt.children, input),
-                        parse_data : HashMap::new(),
-                        constituents : HashMap::new()
+                        parse_data: HashMap::new(),
+                        constituents: HashMap::new(),
                     }
                 })
                 .collect()

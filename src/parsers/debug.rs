@@ -15,17 +15,21 @@ impl DebugPrinter {
         }
     }
 
-    fn print_node(node: &DokeNode, indent: usize) {
+    fn print_node(node: &DokeNode, indent: usize, constituent : bool) {
         let padding = "  ".repeat(indent);
         println!(
-            "{}{} {}",
+            "{}{}{} {}",
             padding,
+            if constituent {"constituent :" } else { "" },
             Self::state_emoji(&node.state),
             node.statement
         );
 
         for child in &node.children {
-            Self::print_node(child, indent + 1);
+            Self::print_node(child, indent + 1, false);
+        }
+        for (name , child) in &node.constituents {
+            Self::print_node(child, indent + 1, true);
         }
     }
 }
@@ -33,6 +37,6 @@ impl DebugPrinter {
 impl DokeParser for DebugPrinter {
     fn process(&self, node: &mut DokeNode, _frontmatter: &HashMap<String, GodotValue>) {
         // Recursively print the node starting from here
-        Self::print_node(node, 0);
+        Self::print_node(node, 0, false);
     }
 }

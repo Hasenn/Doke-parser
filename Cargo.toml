@@ -12,6 +12,7 @@ readme = "README.md"
 keywords = ["parsing", "doke", "dokedex"]  
 
 [dependencies]
+chumsky = "0.10.1"
 lalrpop-util = { version = "0.22.2", features = ["lexer"] }
 markdown = { version = "1.0.0", features = ["serde"] }
 regex = "1.11.2"

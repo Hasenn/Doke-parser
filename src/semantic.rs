@@ -1,7 +1,7 @@
+use markdown::mdast::Node;
 use std::any::Any;
 use std::collections::HashMap;
 use std::error::Error;
-use markdown::mdast::Node;
 use thiserror::Error;
 
 // ----------------- GodotValue -----------------
@@ -38,7 +38,7 @@ pub trait DokeOut: std::fmt::Debug {
     fn use_child(&mut self, _child: GodotValue) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
-    fn use_constituent(&mut self, name : &str,value: GodotValue) -> Result<(), Box<dyn Error>> {
+    fn use_constituent(&mut self, name: &str, value: GodotValue) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
 }
@@ -66,7 +66,7 @@ pub struct DokeNode {
     /// A bucket of Godot-Compatible data that parsers can populate and read from.
     pub parse_data: HashMap<String, GodotValue>,
     /// The constituent parts of the statement, if it takes some and a parser broke it like that.
-    pub constituents: HashMap<String, DokeNode>
+    pub constituents: HashMap<String, DokeNode>,
 }
 
 /// The state of an unparsed, parsed, maybe parsed, or definitely wrong statement.
@@ -173,7 +173,10 @@ impl DokeOut for GodotValue {
             ))),
             GodotValue::Array(_) => todo!(),
             GodotValue::Dict(_) => todo!(),
-            GodotValue::Resource { type_name: _, fields } => {
+            GodotValue::Resource {
+                type_name: _,
+                fields,
+            } => {
                 match &mut fields
                     .entry("children".into())
                     .or_insert(GodotValue::Array(vec![]))
@@ -181,9 +184,10 @@ impl DokeOut for GodotValue {
                     GodotValue::Array(godot_values) => {
                         godot_values.push(_child);
                         Ok(())
-                    },
+                    }
                     _ => Err(Box::new(GodotValueError::InvalidChild(
-                        "Can't add child to resource : children field is not empty or an array".into(),
+                        "Can't add child to resource : children field is not empty or an array"
+                            .into(),
                     ))),
                 }
             }
@@ -234,7 +238,7 @@ impl DokeValidate {
         &mut self,
         node: &mut DokeNode,
         frontmatter: &HashMap<String, GodotValue>,
-        constituent_name : &str
+        constituent_name: &str,
     ) -> Result<GodotValue, DokeValidationError> {
         let mut child_values = Vec::new();
         let mut constituent_values: HashMap<String, GodotValue> = HashMap::new();

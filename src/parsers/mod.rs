@@ -1,8 +1,8 @@
 mod debug;
 mod sentence;
-pub use sentence::SentenceParser;
 pub use debug::DebugPrinter;
 use regex::Regex;
+pub use sentence::SentenceParser;
 use std::collections::HashMap;
 
 use crate::{
