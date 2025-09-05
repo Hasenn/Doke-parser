@@ -1,6 +1,6 @@
 [package]
 name = "doke" 
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "The parsing library of `Dokedex`, a game content authoring tool that uses natural-looking language to define a game's objects. This rust crate defines an API to make `doke` parsers by using a simple pipeline syntax, and provides helpers for things like templating, debugging, and common syntax elements." 
 license = "MIT OR Apache-2.0" 
