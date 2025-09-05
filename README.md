@@ -1,7 +1,3 @@
-Here’s a polished, “pimped” version of your README that keeps the technical detail but adds a bit of shine, structure, and friendliness. I’ve tightened phrasing, added some formatting flourishes, and reordered a few things for flow.
-
----
-
 # 🚀 DokePipe
 
 **DokePipe** is a powerful, extensible semantic parsing pipeline for Markdown.
