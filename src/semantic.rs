@@ -200,8 +200,8 @@ impl DokeOut for GodotValue {
             | GodotValue::String(_) => Err(Box::new(GodotValueError::InvalidChild(
                 self.kind().to_owned(),
             ))),
-            GodotValue::Array(_) => todo!(),
-            GodotValue::Dict(_) => todo!(),
+            GodotValue::Array(v) => {v.push(_child); Ok(())},
+            GodotValue::Dict(h) => {h.insert("children".into(), _child); Ok(())},
             GodotValue::Resource {
                 type_name: _,
                 fields,

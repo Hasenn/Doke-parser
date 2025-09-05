@@ -12,6 +12,7 @@ readme = "README.md"
 keywords = ["parsing", "doke", "dokedex"]  
 
 [dependencies]
+glob = "0.3.3"
 lalrpop-util = { version = "0.22.2", features = ["lexer"] }
 markdown = { version = "1.0.0", features = ["serde"] }
 polib = "0.2.0"
