@@ -65,6 +65,8 @@ fn main() -> Result<(), std::io::Error> {
 
 The **sentence parser** lets you define simple rules in YAML, avoiding the need to handcraft full grammars. It’s designed for **fast prototyping** and **structured natural language parsing**.
 
+Its main use should be with the [typed sentences parser](#typed-sentences-parser)
+
 ### Example
 
 ```yaml
@@ -91,7 +93,7 @@ Target :
 
 ❌ Limitations:
 
-* Case- and space-sensitive.
+* Case-sensitive.
 * Regex-based → ambiguous overlaps are not supported.
 * Complex grammars still require custom parsers.
 
@@ -118,6 +120,41 @@ func describe():
 ```
 
 This allows you to build entire **translation tables** automatically.
+
+
+## Typed Sentences Parser
+This is the main workflow when you don't want any re-compilation.
+it uses [sentence parsers](#sentence-parser)
+
+it can pull all the definitions from `.dokedef.yaml` files into a sentence parser for an abstract type,
+and allows abstract types to define what children they allow and where they go.
+
+### Example (.dokeconfig.yaml)
+```yaml
+rules:
+  - for: ItemEffect
+    parser: "**/*Effect.dokedef.yaml"
+    children: 
+      animations: [Animation]
+      modifiers: [Modifier]
+  
+  - for: Animation
+    parser: "**/*Animation.dokedef.yaml"
+  
+  - for: Modifier
+    parser: "**/*Modifier.dokedef.yaml"
+    children : Modifier
+```
+
+## Input Format
+```
+deal 10 fire damage
+- play animation: anims/fire on target
+heal 20 health  
+- play animation: anims/heal on self
+apply burning for 5 seconds
+- play animation: anims/smoke on target
+```
 
 ---
 
@@ -176,8 +213,8 @@ impl DokeParser for HelloWorldParser {
 Because Markdown is great for **writing content**, but not great for **structured semantics**.
 Doke bridges that gap:
 
-* Writers stay in Markdown.
+* Designers stay in Markdown.
 * Developers get typed, validated data.
-* Games get Godot-ready assets.
+* Games get their items, quests...
 
 ---
