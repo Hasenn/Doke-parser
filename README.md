@@ -129,7 +129,7 @@ it uses [sentence parsers](#sentence-parser)
 it can pull all the definitions from `.dokedef.yaml` files into a sentence parser for an abstract type,
 and allows abstract types to define what children they allow and where they go.
 
-### Example (.dokeconfig.yaml)
+### Example (Item.dokeconfig.yaml)
 ```yaml
 rules:
   - for: ItemEffect
