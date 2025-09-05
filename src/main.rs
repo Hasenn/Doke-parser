@@ -1,9 +1,7 @@
-use doke::{DokePipe, GodotValue, parsers};
-use core::error;
+use doke::{DokePipe, parsers};
 use std::env;
 use std::fs::File;
 use std::io::{self, Read};
-use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse command line arguments
