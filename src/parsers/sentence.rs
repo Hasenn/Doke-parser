@@ -7,17 +7,15 @@
 
 use polib::po_file::POParseError;
 use regex::Regex;
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::{collections::HashMap};
+use yaml_rust2::yaml::Hash;
 
-use yaml_rust2::{Yaml, YamlLoader};
-use thiserror::Error;
 use crate::base_parser::Position;
 use crate::utility::{camel_to_const_case, hash_value, u64_to_base32, update_po_file};
 use crate::{DokeNode, DokeNodeState, DokeOut, DokeParser, GodotValue, Hypo};
-
-
-
+use thiserror::Error;
+use yaml_rust2::{Yaml, YamlLoader};
 
 type Result<T> = std::result::Result<T, SentenceParseError>;
 
@@ -39,10 +37,8 @@ pub enum SentenceParseError {
     #[error("Max recursion depth exceeded : {0}")]
     MaxRecursionDepthExceeded(String),
     #[error("Could not read translation file : {0}")]
-    TranslationWriteError(#[from] POParseError)
+    TranslationWriteError(#[from] POParseError),
 }
-
-
 
 // ----------------- Config structures -----------------
 
@@ -71,17 +67,21 @@ pub struct PhraseConfig {
 impl PhraseConfig {
     // A traduction key, Deterministic in the phrase pattern.
     // Currently uses the section name the rule was in and a hash of the rule string
-    fn make_tr_key(&self)-> String {
-        let hash : String = u64_to_base32(hash_value(&self.pattern)).chars().take(7).collect();
+    fn make_tr_key(&self) -> String {
+        let hash: String = u64_to_base32(hash_value(&self.pattern))
+            .chars()
+            .take(7)
+            .collect();
         format!("{}_{}", camel_to_const_case(&self.section), hash)
     }
 }
 
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SentenceParser {
-    phrases: Vec<PhraseConfig>,
-    type_patterns: HashMap<String, Vec<(Regex, GodotValue)>>,
+    pub phrases: Vec<PhraseConfig>,
+    pub type_patterns: HashMap<String, Vec<(Regex, GodotValue)>>,
+    pub abstract_type: String,
+    pub children_map: HashMap<String, String>,
 }
 
 // ----------------- Parser construction -----------------
@@ -90,7 +90,7 @@ impl SentenceParser {
     pub fn get_en_translation(&self) -> HashMap<String, String> {
         let mut trads = HashMap::new();
         let re = Regex::new(r"\{([^}:]+)(?:\s*:\s*[^}]*)?\}").unwrap();
-        
+
         for phrase in &self.phrases {
             let cleaned_pattern = re.replace_all(&phrase.pattern, "{$1}");
             trads.insert(phrase.make_tr_key(), cleaned_pattern.to_string());
@@ -98,56 +98,65 @@ impl SentenceParser {
         trads
     }
 
-    pub fn make_or_update_po_file(&self,path : PathBuf, project_id_version : String) -> Result<()> {
+    pub fn make_or_update_po_file(&self, path: PathBuf, project_id_version: String) -> Result<()> {
         update_po_file(&path, self.get_en_translation(), project_id_version)?;
         Ok(())
     }
 
-    pub fn from_yaml(config: &str) -> std::result::Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_yaml(
+        abstract_type: String,
+        config: &str,
+    ) -> std::result::Result<Self, Box<dyn std::error::Error>> {
         let docs = YamlLoader::load_from_str(config)?;
-        let doc = docs.first().ok_or("Empty YAML")?;
         let mut phrases = Vec::new();
         let type_patterns = HashMap::new();
-
-        let top_hash = doc.as_hash().ok_or("Top-level YAML must be a mapping")?;
         let param_re = Regex::new(r"\{([^}:]+)(?::([^}]+))?\}")?;
 
-        for (k, v) in top_hash {
-            let section_name = match k {
-                Yaml::String(s) => s.clone(),
-                _ => continue,
-            };
+        // Process ALL documents
+        for doc in docs {
+            if let Yaml::Hash(top_hash) = doc {
+                for (k, v) in top_hash {
+                    let section_name = match k {
+                        Yaml::String(s) => s.clone(),
+                        _ => continue,
+                    };
 
-            if let Some(items) = v.as_vec() {
-                for item in items {
-                    match item {
-                        Yaml::String(phrase_str) => {
-                            let (regex, params) = build_regex_for_phrase(phrase_str, &param_re)?;
-                            phrases.push(PhraseConfig {
-                                pattern: phrase_str.clone(),
-                                regex,
-                                parameters: params,
-                                return_spec: ReturnSpec::Type(section_name.clone()),
-                                section: section_name.clone(),
-                            });
-                        }
-                        Yaml::Hash(map) => {
-                            for (mk, mv) in map {
-                                let phrase_text =
-                                    mk.as_str().ok_or("Phrase key must be string")?.to_string();
-                                let return_spec = parse_rhs_to_return_spec(mv, &section_name)?;
-                                let (regex, params) =
-                                    build_regex_for_phrase(&phrase_text, &param_re)?;
-                                phrases.push(PhraseConfig {
-                                    pattern: phrase_text,
-                                    regex,
-                                    parameters: params,
-                                    return_spec,
-                                    section: section_name.clone(),
-                                });
+                    if let Some(items) = v.as_vec() {
+                        for item in items {
+                            match item {
+                                Yaml::String(phrase_str) => {
+                                    let (regex, params) =
+                                        build_regex_for_phrase(phrase_str, &param_re)?;
+                                    phrases.push(PhraseConfig {
+                                        pattern: phrase_str.clone(),
+                                        regex,
+                                        parameters: params,
+                                        return_spec: ReturnSpec::Type(section_name.clone()),
+                                        section: section_name.clone(),
+                                    });
+                                }
+                                Yaml::Hash(map) => {
+                                    for (mk, mv) in map {
+                                        let phrase_text = mk
+                                            .as_str()
+                                            .ok_or("Phrase key must be string")?
+                                            .to_string();
+                                        let return_spec =
+                                            parse_rhs_to_return_spec(mv, &section_name)?;
+                                        let (regex, params) =
+                                            build_regex_for_phrase(&phrase_text, &param_re)?;
+                                        phrases.push(PhraseConfig {
+                                            pattern: phrase_text,
+                                            regex,
+                                            parameters: params,
+                                            return_spec,
+                                            section: section_name.clone(),
+                                        });
+                                    }
+                                }
+                                _ => {}
                             }
                         }
-                        _ => {}
                     }
                 }
             }
@@ -156,10 +165,11 @@ impl SentenceParser {
         Ok(Self {
             phrases,
             type_patterns,
+            abstract_type,
+            children_map: HashMap::new(),
         })
     }
 }
-
 // ----------------- Processing -----------------
 
 impl SentenceParser {
@@ -201,15 +211,27 @@ impl SentenceParser {
 
         matches.sort_by_key(|(p, _)| phrase_specificity(p));
         let (best_phrase, raw_params) = matches.pop().unwrap();
-        let (parsed_params, constituent_nodes) =
-            self.parse_parameters(&best_phrase.parameters, &raw_params, frontmatter, &node.span);
+        let (parsed_params, constituent_nodes) = self.parse_parameters(
+            &best_phrase.parameters,
+            &raw_params,
+            frontmatter,
+            &node.span,
+        );
 
         // attach constituents
         node.constituents.extend(constituent_nodes);
-        let tr_key : String = best_phrase.make_tr_key();
+        let tr_key: String = best_phrase.make_tr_key();
         let result = match &best_phrase.return_spec {
-            ReturnSpec::Type(t) => SentenceResult::new_type(t.clone(), parsed_params, tr_key),
-            ReturnSpec::Literal(lv) => SentenceResult::new_literal(lv.clone(), parsed_params, tr_key),
+            ReturnSpec::Type(t) => SentenceResult::new_type(
+                t.clone(),
+                parsed_params,
+                tr_key,
+                Some(self.abstract_type.clone()),
+                self.children_map.clone(),
+            ),
+            ReturnSpec::Literal(lv) => {
+                SentenceResult::new_literal(lv.clone(), parsed_params, tr_key)
+            }
             ReturnSpec::Format(fmt) => {
                 let final_str = perform_format_string(fmt, &parsed_params, frontmatter);
                 SentenceResult::new_literal(GodotValue::String(final_str), parsed_params, tr_key)
@@ -224,7 +246,7 @@ impl SentenceParser {
         param_defs: &[ParameterDefinition],
         raw_params: &HashMap<String, String>,
         frontmatter: &HashMap<String, GodotValue>,
-        span : &Position
+        span: &Position,
     ) -> (HashMap<String, GodotValue>, HashMap<String, DokeNode>) {
         let mut parsed_params = HashMap::new();
         let mut constituent_nodes = HashMap::new();
@@ -237,7 +259,8 @@ impl SentenceParser {
                             parsed_params.insert(param_def.name.clone(), v);
                         }
                     } else {
-                        let mut child = create_constituent_node(raw_val, &param_def.param_type, span);
+                        let mut child =
+                            create_constituent_node(raw_val, &param_def.param_type, span);
                         child.parse_data.insert(
                             "sentence_type".to_string(),
                             GodotValue::String(param_def.param_type.clone()),
@@ -246,8 +269,7 @@ impl SentenceParser {
                         constituent_nodes.insert(param_def.name.clone(), child);
                     }
                 }
-                None => {
-                }
+                None => {}
             }
         }
 
@@ -333,14 +355,14 @@ fn parse_basic_parameter(value: &str, param_type: &str) -> std::result::Result<G
     }
 }
 
-fn create_constituent_node(value: &str, _param_type: &str, span : &Position) -> DokeNode {
+fn create_constituent_node(value: &str, _param_type: &str, span: &Position) -> DokeNode {
     DokeNode {
         statement: value.to_string(),
         state: DokeNodeState::Unresolved,
         children: Vec::new(),
         parse_data: HashMap::new(),
         constituents: HashMap::new(),
-        span : span.clone()
+        span: span.clone(),
     }
 }
 
@@ -449,10 +471,7 @@ fn build_regex_for_phrase(
 
         regex_pattern.push_str(&group_regex);
 
-        parameters.push(ParameterDefinition {
-            name,
-            param_type,
-        });
+        parameters.push(ParameterDefinition { name, param_type });
 
         last_end = m.end();
     }
@@ -595,24 +614,37 @@ struct SentenceResult {
     output_type: String, // type name when resource
     parameters: HashMap<String, GodotValue>,
     literal_value: Option<GodotValue>, // when a phrase returns a literal value instead of a Resource
-    tr_key: String
+    tr_key: String,
+    abstract_type: Option<String>,
+    /// stores which children goes where
+    children_map: HashMap<String, String>,
 }
 
 impl SentenceResult {
-    fn new_type(t: String, params: HashMap<String, GodotValue>, tr_key : String) -> Self {
+    fn new_type(
+        t: String,
+        params: HashMap<String, GodotValue>,
+        tr_key: String,
+        abstract_type: Option<String>,
+        children_map: HashMap<String, String>,
+    ) -> Self {
         Self {
             output_type: t,
             parameters: params,
             literal_value: None,
-            tr_key
+            tr_key,
+            abstract_type,
+            children_map,
         }
     }
-    fn new_literal(val: GodotValue, params: HashMap<String, GodotValue>, tr_key : String) -> Self {
+    fn new_literal(val: GodotValue, params: HashMap<String, GodotValue>, tr_key: String) -> Self {
         Self {
             output_type: "".to_string(),
             parameters: params,
             literal_value: Some(val),
-            tr_key
+            tr_key,
+            abstract_type: None,
+            children_map: HashMap::new(),
         }
     }
 }
@@ -627,7 +659,10 @@ impl DokeOut for SentenceResult {
             lit.clone()
         } else {
             let mut fields = self.parameters.clone();
-            fields.insert("doke_tr_key".into(), GodotValue::String(self.tr_key.clone()));
+            fields.insert(
+                "doke_tr_key".into(),
+                GodotValue::String(self.tr_key.clone()),
+            );
             GodotValue::Resource {
                 type_name: self.output_type.clone(),
                 fields,
@@ -635,7 +670,14 @@ impl DokeOut for SentenceResult {
         }
     }
 
-    fn use_child(&mut self, child: GodotValue) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn get_asbtract_type(&self) -> Option<String> {
+        return self.abstract_type.clone();
+    }
+
+    fn use_child(
+        &mut self,
+        child: GodotValue,
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         match self.parameters.entry("children".into()) {
             std::collections::hash_map::Entry::Occupied(mut e) => {
                 if let GodotValue::Array(a) = e.get_mut() {
@@ -655,14 +697,17 @@ impl DokeOut for SentenceResult {
         }
     }
 
-    fn use_constituent(&mut self, name: &str, value: GodotValue) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn use_constituent(
+        &mut self,
+        name: &str,
+        value: GodotValue,
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         self.parameters.insert(name.to_string(), value);
         Ok(())
     }
 }
 
 // ----------------- Parsing error types & error hypo -----------------
-
 
 #[derive(Debug)]
 struct ErrorHypo {
@@ -677,7 +722,9 @@ impl Hypo for ErrorHypo {
     fn confidence(&self) -> f32 {
         -1.0
     }
-    fn promote(self: Box<Self>) -> std::result::Result<Box<dyn DokeOut>, Box<dyn std::error::Error>> {
+    fn promote(
+        self: Box<Self>,
+    ) -> std::result::Result<Box<dyn DokeOut>, Box<dyn std::error::Error>> {
         Err(Box::new(self.error))
     }
 }
@@ -690,9 +737,9 @@ impl Hypo for ErrorHypo {
 
 #[cfg(test)]
 mod tests {
+    use crate::DokeParser;
     use crate::base_parser::Position;
     use crate::parsers::DebugPrinter;
-    use crate::DokeParser;
     use crate::parsers::sentence::SentenceParser;
     use crate::semantic::{DokeNode, DokeNodeState, DokeValidate, GodotValue};
     use std::collections::HashMap;
@@ -709,7 +756,7 @@ mod tests {
             children: Vec::new(),
             parse_data: HashMap::new(),
             constituents: HashMap::new(),
-            span: Position{start: 0, end : 0}
+            span: Position { start: 0, end: 0 },
         };
 
         // Parse into hypotheses / unresolved states
@@ -735,7 +782,7 @@ DamageEffect:
 ReactionEffect:
   - "When hit: {damage_effect: DamageEffect}"
 "#;
-        let parser = SentenceParser::from_yaml(yaml).unwrap();
+        let parser = SentenceParser::from_yaml("".into(), yaml).unwrap();
         let val = resolve_node(&parser, "When hit: Deals 7", HashMap::new());
 
         if let GodotValue::Resource { type_name, fields } = val {
@@ -768,7 +815,7 @@ HealEffect:
 ComboEffect:
   - "First: {dmg: DamageEffect}, Then: {heal: HealEffect}"
 "#;
-        let parser = SentenceParser::from_yaml(yaml).unwrap();
+        let parser = SentenceParser::from_yaml("".into(), yaml).unwrap();
         let val = resolve_node(&parser, "First: Deals 10, Then: Heals 5", HashMap::new());
 
         if let GodotValue::Resource { type_name, fields } = val {
@@ -814,7 +861,7 @@ ComboEffect:
   - "First: {dmg: DamageEffect}, Then: {heal: HealEffect}, Reaction: {reaction: ReactionEffect}"
 "#;
 
-        let parser = SentenceParser::from_yaml(yaml).unwrap();
+        let parser = SentenceParser::from_yaml("".into(), yaml).unwrap();
         let val = resolve_node(
             &parser,
             "First: Deals 10, Then: Heals 5, Reaction: When hit: Deals 2",
@@ -887,7 +934,7 @@ SuperReactionEffect:
   - "Triggered: {reaction: ReactionEffect}"
 "#;
 
-        let parser = SentenceParser::from_yaml(yaml).unwrap();
+        let parser = SentenceParser::from_yaml("".into(), yaml).unwrap();
         let val = resolve_node(&parser, "Triggered: On hit: Deals 7", HashMap::new());
 
         if let GodotValue::Resource { type_name, fields } = val {

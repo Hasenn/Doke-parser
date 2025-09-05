@@ -20,14 +20,14 @@ pub struct DokeDocument {
 
 /// A pipe of semantic parsers.
 /// using validate() or run_markdown() on an input will parse it with the pipe.
-/// 
+///
 /// The pipe automatically translates the input markdown into `DokeNode`,
 /// a semantic and mutable tree of statements.
+#[derive(Debug)]
 pub struct DokePipe<'a> {
     parsers: Vec<Box<dyn DokeParser + 'a>>,
     parse_options: ParseOptions,
 }
-
 
 impl<'a> DokePipe<'a> {
     pub fn new() -> Self {
@@ -39,7 +39,7 @@ impl<'a> DokePipe<'a> {
     /// Validates the tree to try and produce a value
     /// ```
     /// use doke::{DokePipe, GodotValue, parsers};
-    /// 
+    ///
     /// let pipe = DokePipe::new()
     ///    .add(parsers::FrontmatterTemplateParser);
     /// let res = pipe.validate("some input");
@@ -51,7 +51,7 @@ impl<'a> DokePipe<'a> {
     /// then this will also error.
     /// Any valid value found for a child node or constituent will call use_children or use_constituents on the values
     /// of the parent nodes.
-    /// 
+    ///
     /// This builds a single object from all the parsed nodes,
     /// or collects errors to display.
     pub fn validate(&self, input: &str) -> Result<Vec<GodotValue>, DokeValidationError> {
@@ -74,6 +74,7 @@ impl<'a> DokePipe<'a> {
     where
         P: DokeParser + 'a,
     {
+        #[derive(Debug)]
         struct Mapper<P: DokeParser> {
             parser: P,
         }
@@ -90,68 +91,85 @@ impl<'a> DokePipe<'a> {
         self.parsers.push(Box::new(Mapper { parser }));
         self
     }
-        /// Adds a parser that conditionally processes nodes based on a filter predicate.
-        ///
-        /// This method creates a parser that recursively traverses the node tree and applies
-        /// the given parser only to nodes for which the filter closure returns `true`.
-        /// Child nodes are always traversed regardless of whether their parent was processed.
-        ///
-        /// # Parameters
-        /// - `parser`: The parser to apply to matching nodes
-        /// - `filter`: A closure that takes a reference to a node, frontmatter and depth, and returns
-        ///   `true` if the parser should be applied to that node
-        ///
-        /// # Examples
-        /// ```
-        /// use doke::{DokePipe, GodotValue, parsers};
-        /// let effect_parser = parsers::SentenceParser::from_yaml(r#"
-        /// Effect:
-        /// - "Does Stuff"
-        /// "#).unwrap();
-        /// let pipe = DokePipe::new()
-        ///     .add(parsers::FrontmatterTemplateParser)
-        ///     .filter_map(effect_parser, |_, _, dpth| dpth > 2 );
-        /// ```
-        ///
-        /// # Note
-        /// The filter is evaluated for each node during processing, and the parser is only
-        /// applied to nodes where the filter returns `true`. All child nodes are still
-        /// traversed to check if they match the filter condition.
-        pub fn filter_map<P, F>(mut self, parser: P, filter: F) -> Self
-        where
-            P: DokeParser + 'a,
-            F: Fn(&DokeNode, &HashMap<String, GodotValue>, usize) -> bool + 'a,
-        {
-            struct FilterMapper<P: DokeParser, F: Fn(&DokeNode, &HashMap<String, GodotValue>, usize) -> bool> {
-                parser: P,
-                filter: F,
-            }
-
-            impl<P: DokeParser, F: Fn(&DokeNode, &HashMap<String, GodotValue>, usize) -> bool> DokeParser
-                for FilterMapper<P, F>
-            {
-                fn process(&self, node: &mut DokeNode, frontmatter: &HashMap<String, GodotValue>) {
-                    self.process_with_level(node, frontmatter, 0);
-                }
-            }
-
-            impl<P: DokeParser, F: Fn(&DokeNode, &HashMap<String, GodotValue>, usize) -> bool> FilterMapper<P, F> {
-                fn process_with_level(&self, node: &mut DokeNode, frontmatter: &HashMap<String, GodotValue>, level: usize) {
-                    // Apply the filter to determine if we should run the parser on this node
-                    if (self.filter)(node, frontmatter, level) {
-                        self.parser.process(node, frontmatter);
-                    }
-                    
-                    // Recursively process children with incremented level
-                    for child in &mut node.children {
-                        self.process_with_level(child, frontmatter, level + 1);
-                    }
-                }
-            }
-
-            self.parsers.push(Box::new(FilterMapper { parser, filter }));
-            self
+    /// Adds a parser that conditionally processes nodes based on a filter predicate.
+    ///
+    /// This method creates a parser that recursively traverses the node tree and applies
+    /// the given parser only to nodes for which the filter closure returns `true`.
+    /// Child nodes are always traversed regardless of whether their parent was processed.
+    ///
+    /// # Parameters
+    /// - `parser`: The parser to apply to matching nodes
+    /// - `filter`: A closure that takes a reference to a node, frontmatter and depth, and returns
+    ///   `true` if the parser should be applied to that node
+    ///
+    /// # Examples
+    /// ```
+    /// use doke::{DokePipe, GodotValue, parsers};
+    /// let effect_parser = parsers::SentenceParser::from_yaml(r#"
+    /// Effect:
+    /// - "Does Stuff"
+    /// "#).unwrap();
+    /// let pipe = DokePipe::new()
+    ///     .add(parsers::FrontmatterTemplateParser)
+    ///     .filter_map(effect_parser, |_, _, dpth| dpth > 2 );
+    /// ```
+    ///
+    /// # Note
+    /// The filter is evaluated for each node during processing, and the parser is only
+    /// applied to nodes where the filter returns `true`. All child nodes are still
+    /// traversed to check if they match the filter condition.
+    pub fn filter_map<P, F>(mut self, parser: P, filter: F) -> Self
+    where
+        P: DokeParser + 'a,
+        F: Fn(&DokeNode, &HashMap<String, GodotValue>, usize) -> bool + 'a,
+    {
+        struct FilterMapper<
+            P: DokeParser,
+            F: Fn(&DokeNode, &HashMap<String, GodotValue>, usize) -> bool,
+        > {
+            parser: P,
+            filter: F,
         }
+        impl<P: DokeParser, F: Fn(&DokeNode, &HashMap<String, GodotValue>, usize) -> bool>
+            std::fmt::Debug for FilterMapper<P, F>
+        {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.parser.fmt(f)
+            }
+        }
+
+        impl<P: DokeParser, F: Fn(&DokeNode, &HashMap<String, GodotValue>, usize) -> bool>
+            DokeParser for FilterMapper<P, F>
+        {
+            fn process(&self, node: &mut DokeNode, frontmatter: &HashMap<String, GodotValue>) {
+                self.process_with_level(node, frontmatter, 0);
+            }
+        }
+
+        impl<P: DokeParser, F: Fn(&DokeNode, &HashMap<String, GodotValue>, usize) -> bool>
+            FilterMapper<P, F>
+        {
+            fn process_with_level(
+                &self,
+                node: &mut DokeNode,
+                frontmatter: &HashMap<String, GodotValue>,
+                level: usize,
+            ) {
+                // Apply the filter to determine if we should run the parser on this node
+                if (self.filter)(node, frontmatter, level) {
+                    self.parser.process(node, frontmatter);
+                }
+
+                // Recursively process children with incremented level
+                for child in &mut node.children {
+                    self.process_with_level(child, frontmatter, level + 1);
+                }
+            }
+        }
+
+        self.parsers.push(Box::new(FilterMapper { parser, filter }));
+        self
+    }
 
     /// Run pipeline on a Markdown string and return a DokeDocument
     pub fn run_markdown(&self, input: &str) -> DokeDocument {
@@ -180,7 +198,10 @@ impl<'a> DokePipe<'a> {
             stmts
                 .iter()
                 .map(|stmt| {
-                    let statement_position = stmt.statement_position.clone().unwrap_or(Position{ start: 0, end: 0 });
+                    let statement_position = stmt
+                        .statement_position
+                        .clone()
+                        .unwrap_or(Position { start: 0, end: 0 });
                     let statement_text = if let Some(pos) = &stmt.statement_position {
                         // Safely slice the input string using byte offsets
                         input
@@ -197,7 +218,7 @@ impl<'a> DokePipe<'a> {
                         children: statements_to_nodes(&stmt.children, input),
                         parse_data: HashMap::new(),
                         constituents: HashMap::new(),
-                        span: statement_position
+                        span: statement_position,
                     }
                 })
                 .collect()

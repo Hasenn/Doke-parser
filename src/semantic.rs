@@ -2,7 +2,7 @@ use markdown::mdast::Node;
 use std::any::Any;
 use std::collections::HashMap;
 use std::error::Error;
-use std::fmt;
+use std::fmt::{self, Debug};
 use thiserror::Error;
 
 use crate::base_parser::Position;
@@ -38,6 +38,9 @@ pub trait Hypo: std::fmt::Debug {
 pub trait DokeOut: std::fmt::Debug {
     fn kind(&self) -> &'static str;
     fn to_godot(&self) -> GodotValue;
+    fn get_asbtract_type(&self) -> Option<String> {
+        None
+    }
     fn use_child(&mut self, _child: GodotValue) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
@@ -73,7 +76,7 @@ pub struct DokeNode {
     /// The position of the original statement in the source string
     /// For constituents as of now, it is the position of the whole statement.
     /// Only used for error reporting
-    pub span : Position,
+    pub span: Position,
 }
 
 /// The state of an unparsed, parsed, maybe parsed, or definitely wrong statement.
@@ -104,7 +107,7 @@ pub enum DokeNodeState {
 // ----------------- Parsers -----------------
 
 /// Updated trait: parsers now get a reference to frontmatter
-pub trait DokeParser {
+pub trait DokeParser: Debug {
     fn process(&self, node: &mut DokeNode, frontmatter: &HashMap<String, GodotValue>);
 }
 // ----------------- Error Types -----------------
@@ -126,7 +129,7 @@ pub enum DokeValidationError {
     #[error("Failed to use child: {0}")]
     ChildUsageFailed(#[source] Box<dyn Error>),
     #[error("Dynamic Error")]
-    DynamicError(#[from] Box<dyn std::error::Error>)
+    DynamicError(#[from] Box<dyn std::error::Error>),
 }
 
 // Wrapper struct for multiple errors
@@ -141,7 +144,7 @@ impl From<Vec<DokeValidationError>> for DokeErrors {
 
 impl fmt::Display for DokeErrors {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            writeln!(f,"")?;
+        writeln!(f, "")?;
         for (i, error) in self.0.iter().enumerate() {
             writeln!(f, "  {}. {}", i + 1, error)?;
         }
@@ -200,8 +203,14 @@ impl DokeOut for GodotValue {
             | GodotValue::String(_) => Err(Box::new(GodotValueError::InvalidChild(
                 self.kind().to_owned(),
             ))),
-            GodotValue::Array(v) => {v.push(_child); Ok(())},
-            GodotValue::Dict(h) => {h.insert("children".into(), _child); Ok(())},
+            GodotValue::Array(v) => {
+                v.push(_child);
+                Ok(())
+            }
+            GodotValue::Dict(h) => {
+                h.insert("children".into(), _child);
+                Ok(())
+            }
             GodotValue::Resource {
                 type_name: _,
                 fields,
@@ -259,7 +268,9 @@ impl DokeValidate {
         } else if validator.errors.len() == 1 {
             Err(validator.errors.remove(0))
         } else {
-            Err(DokeValidationError::MultipleErrors(DokeErrors(validator.errors)))
+            Err(DokeValidationError::MultipleErrors(DokeErrors(
+                validator.errors,
+            )))
         }
     }
 
@@ -300,9 +311,9 @@ impl DokeValidate {
 
                 if let Some(best_index) = best_index {
                     let hypo = hypotheses.remove(best_index);
-                    let mut resolved = hypo
-                        .promote()
-                        .map_err(|e|DokeValidationError::HypothesisPromotionFailed(e, node.span.clone()))?;
+                    let mut resolved = hypo.promote().map_err(|e| {
+                        DokeValidationError::HypothesisPromotionFailed(e, node.span.clone())
+                    })?;
 
                     for child in &child_values {
                         resolved

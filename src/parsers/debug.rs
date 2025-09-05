@@ -3,7 +3,9 @@ use std::collections::HashMap;
 
 /// A parser that prints the node tree for debugging purposes.
 /// Can be added anywhere in a pipeline with `.add(DebugPrinter)`.
+#[derive(Debug)]
 pub struct DebugPrinter;
+
 
 impl DebugPrinter {
     fn state_emoji(state: &DokeNodeState) -> &'static str {
@@ -15,12 +17,16 @@ impl DebugPrinter {
         }
     }
 
-    fn print_node(node: &DokeNode, indent: usize, constituent_name : &str) {
+    fn print_node(node: &DokeNode, indent: usize, constituent_name: &str) {
         let padding = "  ".repeat(indent);
         println!(
             "{}{}{} {}",
             padding,
-            if constituent_name != "" {format!("{}:", constituent_name) } else { "".to_string() },
+            if constituent_name != "" {
+                format!("{}:", constituent_name)
+            } else {
+                "".to_string()
+            },
             Self::state_emoji(&node.state),
             node.statement
         );
@@ -28,7 +34,7 @@ impl DebugPrinter {
         for child in &node.children {
             Self::print_node(child, indent + 1, "");
         }
-        for (name , child) in &node.constituents {
+        for (name, child) in &node.constituents {
             Self::print_node(child, indent + 1, name);
         }
     }
@@ -37,6 +43,7 @@ impl DebugPrinter {
 impl DokeParser for DebugPrinter {
     fn process(&self, node: &mut DokeNode, _frontmatter: &HashMap<String, GodotValue>) {
         // Recursively print the node starting from here
+        dbg!(&node);
         Self::print_node(node, 0, "");
     }
 }

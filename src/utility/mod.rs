@@ -1,6 +1,11 @@
-use polib::{catalog::Catalog, message::{Message, MessageBuilder}, metadata::CatalogMetadata, po_file::{self, POParseError}};
-use std::{collections::HashMap, hash::DefaultHasher, path::Path};
+use polib::{
+    catalog::Catalog,
+    message::Message,
+    metadata::CatalogMetadata,
+    po_file::{self, POParseError},
+};
 use std::hash::{Hash, Hasher};
+use std::{collections::HashMap, hash::DefaultHasher, path::Path};
 
 pub fn hash_value<T: Hash>(value: &T) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -12,10 +17,10 @@ pub fn camel_to_const_case(input: &str) -> String {
     let mut chars = input.chars().peekable();
     let mut prev_was_upper = false;
     let mut prev_was_lower = false;
-    
+
     while let Some(c) = chars.next() {
         let is_upper = c.is_uppercase();
-        
+
         // Add underscore if:
         // 1. Current char is uppercase AND previous was lowercase (camelCase boundary)
         // 2. Current char is lowercase AND previous was uppercase AND next is uppercase (aBc -> A_BC)
@@ -28,42 +33,41 @@ pub fn camel_to_const_case(input: &str) -> String {
                 }
             }
         }
-        
+
         result.push(c.to_ascii_uppercase());
-        
+
         prev_was_upper = is_upper;
         prev_was_lower = !is_upper;
     }
-    
+
     result
 }
 
 const BASE32_ALPHABET: [char; 32] = [
-    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
-    'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
-    '2', '3', '4', '5', '6', '7',
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
+    'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '2', '3', '4', '5', '6', '7',
 ];
 
 pub fn u64_to_base32(mut num: u64) -> String {
     if num == 0 {
         return "A".to_string();
     }
-    
+
     let mut result = String::new();
-    
+
     while num > 0 {
         let remainder = (num % 32) as usize;
         result.push(BASE32_ALPHABET[remainder]);
         num /= 32;
     }
-    
+
     result.chars().rev().collect()
 }
 
 pub fn update_po_file(
     po_path: &Path,
     translations: HashMap<String, String>,
-    project_id_version : String,
+    project_id_version: String,
 ) -> Result<(), POParseError> {
     // Load existing PO file or create new
     let mut catalog = if po_path.exists() {
@@ -76,16 +80,20 @@ pub fn update_po_file(
         Catalog::new(meta)
     };
     for (msgid, msgentrad) in translations {
-        let m_singular = Message::build_singular().with_msgid(msgid.clone()).with_msgstr(msgentrad.clone()).done();
+        let m_singular = Message::build_singular()
+            .with_msgid(msgid.clone())
+            .with_msgstr(msgentrad.clone())
+            .done();
         let m_plural = Message::build_plural()
             .with_msgid(format!("{}_PL", msgid.clone()))
-            .with_msgstr(msgentrad.clone()).done();
+            .with_msgstr(msgentrad.clone())
+            .done();
         catalog.append_or_update(m_singular);
         catalog.append_or_update(m_plural);
     }
 
     // Save updated PO file
     po_file::write(&catalog, po_path)?;
-    
+
     Ok(())
 }

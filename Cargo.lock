@@ -102,6 +102,7 @@ name = "doke"
 version = "0.1.0"
 dependencies = [
  "glob",
+ "hashlink",
  "lalrpop",
  "lalrpop-util",
  "markdown",

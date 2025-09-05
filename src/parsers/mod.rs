@@ -1,15 +1,18 @@
 mod debug;
 mod sentence;
+mod typed_sentences;
 pub use debug::DebugPrinter;
 use regex::Regex;
 pub use sentence::SentenceParser;
 use std::collections::HashMap;
+pub use typed_sentences::TypedSentencesParser;
 
 use crate::{
     GodotValue,
     semantic::{DokeNode, DokeParser},
 };
 
+#[derive(Debug)]
 pub struct FrontmatterTemplateParser;
 
 impl DokeParser for FrontmatterTemplateParser {
