@@ -5,13 +5,78 @@
 // strict-case matching, whitespace-robust literals,
 // phrase specificity, and recursive constituent parsing.
 
+use polib::po_file::POParseError;
 use regex::Regex;
-use std::collections::HashMap;
+use std::path::PathBuf;
+use std::{collections::HashMap};
 
 use yaml_rust2::{Yaml, YamlLoader};
 use thiserror::Error;
+use crate::base_parser::Position;
+use crate::utility::update_po_file;
 use crate::{DokeNode, DokeNodeState, DokeOut, DokeParser, GodotValue, Hypo};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
+fn hash_value<T: Hash>(value: &T) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+fn camel_to_const_case(input: &str) -> String {
+    let mut result = String::new();
+    let mut chars = input.chars().peekable();
+    let mut prev_was_upper = false;
+    let mut prev_was_lower = false;
+    
+    while let Some(c) = chars.next() {
+        let is_upper = c.is_uppercase();
+        
+        // Add underscore if:
+        // 1. Current char is uppercase AND previous was lowercase (camelCase boundary)
+        // 2. Current char is lowercase AND previous was uppercase AND next is uppercase (aBc -> A_BC)
+        if !result.is_empty() {
+            if is_upper && prev_was_lower {
+                result.push('_');
+            } else if let Some(&next) = chars.peek() {
+                if !is_upper && prev_was_upper && next.is_uppercase() {
+                    result.push('_');
+                }
+            }
+        }
+        
+        result.push(c.to_ascii_uppercase());
+        
+        prev_was_upper = is_upper;
+        prev_was_lower = !is_upper;
+    }
+    
+    result
+}
+
+const BASE32_ALPHABET: [char; 32] = [
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+    'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+    '2', '3', '4', '5', '6', '7',
+];
+
+fn u64_to_base32(mut num: u64) -> String {
+    if num == 0 {
+        return "A".to_string();
+    }
+    
+    let mut result = String::new();
+    
+    while num > 0 {
+        let remainder = (num % 32) as usize;
+        result.push(BASE32_ALPHABET[remainder]);
+        num /= 32;
+    }
+    
+    result.chars().rev().collect()
+}
+
+type Result<T> = std::result::Result<T, SentenceParseError>;
 
 #[derive(Debug, Error)]
 pub enum SentenceParseError {
@@ -26,11 +91,14 @@ pub enum SentenceParseError {
 
     #[error("Invalid pattern: {0}")]
     InvalidPattern(String),
-    #[error("No phrase matched: {0}")]
+    #[error("\"{0}\" : No sentence match")]
     NoMatch(String),
     #[error("Max recursion depth exceeded : {0}")]
     MaxRecursionDepthExceeded(String),
+    #[error("Could not read translation file : {0}")]
+    TranslationWriteError(#[from] POParseError)
 }
+
 
 
 // ----------------- Config structures -----------------
@@ -57,6 +125,16 @@ pub struct PhraseConfig {
     pub section: String,
 }
 
+impl PhraseConfig {
+    // A traduction key, Deterministic in the phrase pattern.
+    // Currently uses the section name the rule was in and a hash of the rule string
+    fn make_tr_key(&self)-> String {
+        let hash : String = u64_to_base32(hash_value(&self.pattern)).chars().take(7).collect();
+        format!("{}_{}", camel_to_const_case(&self.section), hash)
+    }
+}
+
+
 #[derive(Debug)]
 pub struct SentenceParser {
     phrases: Vec<PhraseConfig>,
@@ -66,11 +144,27 @@ pub struct SentenceParser {
 // ----------------- Parser construction -----------------
 
 impl SentenceParser {
-    pub fn from_yaml(config: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn get_en_translation(&self) -> HashMap<String, String> {
+        let mut trads = HashMap::new();
+        let re = Regex::new(r"\{([^}:]+)(?:\s*:\s*[^}]*)?\}").unwrap();
+        
+        for phrase in &self.phrases {
+            let cleaned_pattern = re.replace_all(&phrase.pattern, "{$1}");
+            trads.insert(phrase.make_tr_key(), cleaned_pattern.to_string());
+        }
+        trads
+    }
+
+    pub fn make_or_update_po_file(&self,path : PathBuf, project_id_version : String) -> Result<()> {
+        update_po_file(&path, self.get_en_translation(), project_id_version)?;
+        Ok(())
+    }
+
+    pub fn from_yaml(config: &str) -> std::result::Result<Self, Box<dyn std::error::Error>> {
         let docs = YamlLoader::load_from_str(config)?;
         let doc = docs.first().ok_or("Empty YAML")?;
         let mut phrases = Vec::new();
-        let mut type_patterns = HashMap::new();
+        let type_patterns = HashMap::new();
 
         let top_hash = doc.as_hash().ok_or("Top-level YAML must be a mapping")?;
         let param_re = Regex::new(r"\{([^}:]+)(?::([^}]+))?\}")?;
@@ -143,8 +237,8 @@ impl SentenceParser {
         if !matches!(node.state, DokeNodeState::Unresolved) {
             return;
         }
-
-        let statement = node.statement.trim();
+        // trim whitespace and trailing .
+        let statement = node.statement.trim().trim_end_matches(|c| ".:".contains(c));
         let phrases_to_check: Vec<&PhraseConfig> = self.phrases.iter().collect();
         let mut matches: Vec<(&PhraseConfig, HashMap<String, String>)> = Vec::new();
 
@@ -165,17 +259,17 @@ impl SentenceParser {
         matches.sort_by_key(|(p, _)| phrase_specificity(p));
         let (best_phrase, raw_params) = matches.pop().unwrap();
         let (parsed_params, constituent_nodes) =
-            self.parse_parameters(&best_phrase.parameters, &raw_params, frontmatter);
+            self.parse_parameters(&best_phrase.parameters, &raw_params, frontmatter, &node.span);
 
         // attach constituents
         node.constituents.extend(constituent_nodes);
-
+        let tr_key : String = best_phrase.make_tr_key();
         let result = match &best_phrase.return_spec {
-            ReturnSpec::Type(t) => SentenceResult::new_type(t.clone(), parsed_params),
-            ReturnSpec::Literal(lv) => SentenceResult::new_literal(lv.clone(), parsed_params),
+            ReturnSpec::Type(t) => SentenceResult::new_type(t.clone(), parsed_params, tr_key),
+            ReturnSpec::Literal(lv) => SentenceResult::new_literal(lv.clone(), parsed_params, tr_key),
             ReturnSpec::Format(fmt) => {
                 let final_str = perform_format_string(fmt, &parsed_params, frontmatter);
-                SentenceResult::new_literal(GodotValue::String(final_str), parsed_params)
+                SentenceResult::new_literal(GodotValue::String(final_str), parsed_params, tr_key)
             }
         };
 
@@ -187,6 +281,7 @@ impl SentenceParser {
         param_defs: &[ParameterDefinition],
         raw_params: &HashMap<String, String>,
         frontmatter: &HashMap<String, GodotValue>,
+        span : &Position
     ) -> (HashMap<String, GodotValue>, HashMap<String, DokeNode>) {
         let mut parsed_params = HashMap::new();
         let mut constituent_nodes = HashMap::new();
@@ -199,7 +294,7 @@ impl SentenceParser {
                             parsed_params.insert(param_def.name.clone(), v);
                         }
                     } else {
-                        let mut child = create_constituent_node(raw_val, &param_def.param_type);
+                        let mut child = create_constituent_node(raw_val, &param_def.param_type, span);
                         child.parse_data.insert(
                             "sentence_type".to_string(),
                             GodotValue::String(param_def.param_type.clone()),
@@ -258,7 +353,7 @@ fn is_basic_type(param_type: &str) -> bool {
     )
 }
 
-fn parse_basic_parameter(value: &str, param_type: &str) -> Result<GodotValue, String> {
+fn parse_basic_parameter(value: &str, param_type: &str) -> std::result::Result<GodotValue, String> {
     match param_type.to_lowercase().as_str() {
         "int" => {
             // support hex/octal/binary prefixes
@@ -295,13 +390,14 @@ fn parse_basic_parameter(value: &str, param_type: &str) -> Result<GodotValue, St
     }
 }
 
-fn create_constituent_node(value: &str, _param_type: &str) -> DokeNode {
+fn create_constituent_node(value: &str, _param_type: &str, span : &Position) -> DokeNode {
     DokeNode {
         statement: value.to_string(),
         state: DokeNodeState::Unresolved,
         children: Vec::new(),
         parse_data: HashMap::new(),
         constituents: HashMap::new(),
+        span : span.clone()
     }
 }
 
@@ -368,7 +464,7 @@ fn godot_value_to_string(v: &GodotValue) -> String {
 fn build_regex_for_phrase(
     phrase: &str,
     param_re: &Regex,
-) -> Result<(Regex, Vec<ParameterDefinition>), Box<dyn std::error::Error>> {
+) -> std::result::Result<(Regex, Vec<ParameterDefinition>), Box<dyn std::error::Error>> {
     let mut parameters: Vec<ParameterDefinition> = Vec::new();
     let mut regex_pattern = String::new();
     regex_pattern.push('^');
@@ -469,7 +565,7 @@ fn push_literal(buf: &mut String, s: &str) {
 fn match_phrase_exact(
     statement: &str,
     phrase: &PhraseConfig,
-) -> Result<HashMap<String, String>, SentenceParseError> {
+) -> std::result::Result<HashMap<String, String>, SentenceParseError> {
     let caps = phrase
         .regex
         .captures(statement)
@@ -498,7 +594,7 @@ fn phrase_specificity(p: &PhraseConfig) -> (usize, usize) {
 fn parse_rhs_to_return_spec(
     node: &Yaml,
     section_default: &str,
-) -> Result<ReturnSpec, SentenceParseError> {
+) -> std::result::Result<ReturnSpec, SentenceParseError> {
     match node {
         Yaml::Null => Ok(ReturnSpec::Type(section_default.to_string())),
         Yaml::String(s) => {
@@ -556,21 +652,24 @@ struct SentenceResult {
     output_type: String, // type name when resource
     parameters: HashMap<String, GodotValue>,
     literal_value: Option<GodotValue>, // when a phrase returns a literal value instead of a Resource
+    tr_key: String
 }
 
 impl SentenceResult {
-    fn new_type(t: String, params: HashMap<String, GodotValue>) -> Self {
+    fn new_type(t: String, params: HashMap<String, GodotValue>, tr_key : String) -> Self {
         Self {
             output_type: t,
             parameters: params,
             literal_value: None,
+            tr_key
         }
     }
-    fn new_literal(val: GodotValue, params: HashMap<String, GodotValue>) -> Self {
+    fn new_literal(val: GodotValue, params: HashMap<String, GodotValue>, tr_key : String) -> Self {
         Self {
             output_type: "".to_string(),
             parameters: params,
             literal_value: Some(val),
+            tr_key
         }
     }
 }
@@ -584,14 +683,16 @@ impl DokeOut for SentenceResult {
         if let Some(lit) = &self.literal_value {
             lit.clone()
         } else {
+            let mut fields = self.parameters.clone();
+            fields.insert("doke_tr_key".into(), GodotValue::String(self.tr_key.clone()));
             GodotValue::Resource {
                 type_name: self.output_type.clone(),
-                fields: self.parameters.clone(),
+                fields,
             }
         }
     }
 
-    fn use_child(&mut self, child: GodotValue) -> Result<(), Box<dyn std::error::Error>> {
+    fn use_child(&mut self, child: GodotValue) -> std::result::Result<(), Box<dyn std::error::Error>> {
         match self.parameters.entry("children".into()) {
             std::collections::hash_map::Entry::Occupied(mut e) => {
                 if let GodotValue::Array(a) = e.get_mut() {
@@ -611,7 +712,7 @@ impl DokeOut for SentenceResult {
         }
     }
 
-    fn use_constituent(&mut self, name: &str, value: GodotValue) -> Result<(), Box<dyn std::error::Error>> {
+    fn use_constituent(&mut self, name: &str, value: GodotValue) -> std::result::Result<(), Box<dyn std::error::Error>> {
         self.parameters.insert(name.to_string(), value);
         Ok(())
     }
@@ -633,7 +734,7 @@ impl Hypo for ErrorHypo {
     fn confidence(&self) -> f32 {
         -1.0
     }
-    fn promote(self: Box<Self>) -> Result<Box<dyn DokeOut>, Box<dyn std::error::Error>> {
+    fn promote(self: Box<Self>) -> std::result::Result<Box<dyn DokeOut>, Box<dyn std::error::Error>> {
         Err(Box::new(self.error))
     }
 }
@@ -646,6 +747,7 @@ impl Hypo for ErrorHypo {
 
 #[cfg(test)]
 mod tests {
+    use crate::base_parser::Position;
     use crate::parsers::DebugPrinter;
     use crate::DokeParser;
     use crate::parsers::sentence::SentenceParser;
@@ -664,6 +766,7 @@ mod tests {
             children: Vec::new(),
             parse_data: HashMap::new(),
             constituents: HashMap::new(),
+            span: Position{start: 0, end : 0}
         };
 
         // Parse into hypotheses / unresolved states

@@ -2,7 +2,10 @@ use markdown::mdast::Node;
 use std::any::Any;
 use std::collections::HashMap;
 use std::error::Error;
+use std::fmt;
 use thiserror::Error;
+
+use crate::base_parser::Position;
 
 // ----------------- GodotValue -----------------
 
@@ -38,7 +41,7 @@ pub trait DokeOut: std::fmt::Debug {
     fn use_child(&mut self, _child: GodotValue) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
-    fn use_constituent(&mut self, name: &str, value: GodotValue) -> Result<(), Box<dyn Error>> {
+    fn use_constituent(&mut self, _name: &str, _value: GodotValue) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
 }
@@ -67,6 +70,10 @@ pub struct DokeNode {
     pub parse_data: HashMap<String, GodotValue>,
     /// The constituent parts of the statement, if it takes some and a parser broke it like that.
     pub constituents: HashMap<String, DokeNode>,
+    /// The position of the original statement in the source string
+    /// For constituents as of now, it is the position of the whole statement.
+    /// Only used for error reporting
+    pub span : Position,
 }
 
 /// The state of an unparsed, parsed, maybe parsed, or definitely wrong statement.
@@ -110,14 +117,36 @@ pub enum DokeValidationError {
     MissingField(String, String),
     #[error("Invalid field type for '{0}' in resource '{1}': expected {2}, got {3}")]
     InvalidFieldType(String, String, String, String),
-    #[error("Failed to promote hypothesis: {0}")]
-    HypothesisPromotionFailed(#[source] Box<dyn Error>),
+    #[error("(Promoted Err) {0} - position {1}")]
+    HypothesisPromotionFailed(#[source] Box<dyn Error>, Position),
     #[error("Unresolved node: {0}")]
     UnresolvedNode(String),
-    #[error("Multiple errors occurred during validation")]
-    MultipleErrors(Vec<DokeValidationError>),
+    #[error("Multiple errors occurred during validation: {0}")]
+    MultipleErrors(#[from] DokeErrors),
     #[error("Failed to use child: {0}")]
     ChildUsageFailed(#[source] Box<dyn Error>),
+    #[error("Dynamic Error")]
+    DynamicError(#[from] Box<dyn std::error::Error>)
+}
+
+// Wrapper struct for multiple errors
+#[derive(Debug, Error)]
+pub struct DokeErrors(Vec<DokeValidationError>);
+
+impl From<Vec<DokeValidationError>> for DokeErrors {
+    fn from(errors: Vec<DokeValidationError>) -> Self {
+        DokeErrors(errors)
+    }
+}
+
+impl fmt::Display for DokeErrors {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            writeln!(f,"")?;
+        for (i, error) in self.0.iter().enumerate() {
+            writeln!(f, "  {}. {}", i + 1, error)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -213,7 +242,7 @@ impl DokeValidate {
         let mut validator = Self::new();
         let results: Vec<Result<GodotValue, DokeValidationError>> = root_nodes
             .iter_mut()
-            .map(|n| validator.process_node(n, frontmatter, ""))
+            .map(|n| validator.process_node(n, frontmatter))
             .collect();
 
         // Flatten results
@@ -230,7 +259,7 @@ impl DokeValidate {
         } else if validator.errors.len() == 1 {
             Err(validator.errors.remove(0))
         } else {
-            Err(DokeValidationError::MultipleErrors(validator.errors))
+            Err(DokeValidationError::MultipleErrors(DokeErrors(validator.errors)))
         }
     }
 
@@ -238,18 +267,17 @@ impl DokeValidate {
         &mut self,
         node: &mut DokeNode,
         frontmatter: &HashMap<String, GodotValue>,
-        constituent_name: &str,
     ) -> Result<GodotValue, DokeValidationError> {
         let mut child_values = Vec::new();
         let mut constituent_values: HashMap<String, GodotValue> = HashMap::new();
         for child in &mut node.children {
-            match self.process_node(child, frontmatter, "") {
+            match self.process_node(child, frontmatter) {
                 Ok(v) => child_values.push(v),
                 Err(e) => return Err(e),
             };
         }
         for (name, constituent) in &mut node.constituents {
-            match self.process_node(constituent, frontmatter, name) {
+            match self.process_node(constituent, frontmatter) {
                 Ok(v) => constituent_values.insert(name.into(), v),
                 Err(e) => return Err(e),
             };
@@ -274,7 +302,7 @@ impl DokeValidate {
                     let hypo = hypotheses.remove(best_index);
                     let mut resolved = hypo
                         .promote()
-                        .map_err(DokeValidationError::HypothesisPromotionFailed)?;
+                        .map_err(|e|DokeValidationError::HypothesisPromotionFailed(e, node.span.clone()))?;
 
                     for child in &child_values {
                         resolved
@@ -282,7 +310,7 @@ impl DokeValidate {
                             .map_err(DokeValidationError::ChildUsageFailed)?;
                     }
                     for (name, value) in &constituent_values {
-                        resolved.use_constituent(name, value.clone());
+                        resolved.use_constituent(name, value.clone())?;
                     }
 
                     node.state = DokeNodeState::Resolved(resolved);
@@ -302,7 +330,7 @@ impl DokeValidate {
                         .map_err(DokeValidationError::ChildUsageFailed)?;
                 }
                 for (name, value) in &constituent_values {
-                    resolved.use_constituent(name, value.clone());
+                    resolved.use_constituent(name, value.clone())?;
                 }
                 Ok(resolved.to_godot())
             }

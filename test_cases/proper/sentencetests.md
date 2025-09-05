@@ -2,11 +2,10 @@
 base_damage : 5
 ---
 
-Heals self for 5
-- Then : do stuff
-  - Deals 3 damage to enemies
-- Child
+When hit: Deals 3 damage.
 
-Deals {base_damage} damage to enemies
+When attacked: Heals for 60.
 
-When hit : Deals 6 damage to enemies
+On crit: Deals 7 damage.
+
+On defend: Deals {base_damage} damage.

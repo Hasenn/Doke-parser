@@ -1,3 +1,5 @@
+use core::fmt;
+
 use markdown::mdast::Node;
 use thiserror::Error;
 
@@ -34,6 +36,12 @@ pub struct DokeBaseDocument<'a> {
 pub struct Position {
     pub start: usize,
     pub end: usize,
+}
+
+impl fmt::Display for Position {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{}-{}]", self.start, self.end)
+    }
 }
 
 impl Position {
