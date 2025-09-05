@@ -9,12 +9,13 @@ Think of it as a bridge between Markdown notes and **typed, validated game-ready
 
 ## ✨ Features
 
-* 📝 **Frontmatter Extraction** – Parse YAML frontmatter straight from Markdown.
-* 🌳 **Semantic Parsing** – Convert Markdown AST into a tree of customizable `DokeNode`s.
-* 🔌 **Extensible Pipeline** – Add your own parsers to interpret and transform nodes.
-* 🧠 **Hypothesis System** – Compete multiple interpretations with confidence scoring.
-* 🎮 **Godot Integration** – Output `GodotValue`s for GDNative/GDExtension.
-* ✅ **Validation Layer** – Ensure documents are well-formed and structurally sound.
+📝 **Frontmatter Extraction** – Parse YAML frontmatter straight from Markdown
+🌳 **Semantic Parsing** – Convert Markdown AST into a tree of customizable DokeNodes
+🔌 **Extensible Pipeline** – Add your own parsers to interpret and transform nodes
+🧠 **Hypothesis System** – Compete multiple interpretations with confidence scoring
+🎮 **Godot Integration** – Output GodotValues for GDNative/GDExtension
+✅ **Validation Layer** – Ensure documents are well-formed and structurally sound
+🎯 **Typed Sentences Parser** – Route nodes to specialized parsers based on type hierarchies and parent-child constraints
 
 ---
 
