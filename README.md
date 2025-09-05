@@ -164,10 +164,10 @@ impl DokeParser for HelloWorldParser {
 
 ## 📚 Roadmap
 
+* [x] Configurable typed sentence parser that uses a `MyType.dokeconf.yaml` which pulls all `MySubType.dokedef.yaml` in your repo
 * [ ] Obsidian integration (live debugging inside notes).
-* [ ] Automatic `.lalrpop` grammar generation from YAML types.
 * [ ] Improved helper tools for debugging & visualization.
-* [ ] More built-in parsers (sentences to grammar)
+* [ ] Automatic `.lalrpop` grammar generation from YAML types.
 
 ---
 
