@@ -24,6 +24,38 @@ pub enum GodotValue {
     },
 }
 
+impl fmt::Display for GodotValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GodotValue::Nil => write!(f, "Nil"),
+            GodotValue::Bool(b) => write!(f, "{}", b),
+            GodotValue::Int(i) => write!(f, "{}", i),
+            GodotValue::Float(fl) => write!(f, "{}", fl),
+            GodotValue::String(s) => write!(f, "\"{}\"", s),
+            GodotValue::Array(arr) => {
+                let elements: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
+                write!(f, "[{}]", elements.join(", "))
+            }
+            GodotValue::Dict(dict) => {
+                let entries: Vec<String> = dict
+                    .iter()
+                    .map(|(k, v)| format!("\"{}\": {}", k, v))
+                    .collect();
+                write!(f, "{{{}}}", entries.join(", "))
+            }
+            GodotValue::Resource { type_name, fields } => {
+                let entries: Vec<String> = fields
+                    .iter()
+                    .map(|(k, v)| format!("\"{}\": {}", k, v))
+                    .collect();
+                write!(f, "{} {{ {} }}", type_name, entries.join(", "))
+            }
+        }
+    }
+}
+
+
+
 // ----------------- Traits -----------------
 
 pub trait Hypo: std::fmt::Debug {
