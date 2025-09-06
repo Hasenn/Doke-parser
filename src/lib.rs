@@ -24,12 +24,12 @@ pub struct DokeDocument {
 /// The pipe automatically translates the input markdown into `DokeNode`,
 /// a semantic and mutable tree of statements.
 #[derive(Debug)]
-pub struct DokePipe<'a> {
-    parsers: Vec<Box<dyn DokeParser + 'a>>,
+pub struct DokePipe{
+    parsers: Vec<Box<dyn DokeParser + Send + Sync + 'static>>,
     parse_options: ParseOptions,
 }
 
-impl<'a> DokePipe<'a> {
+impl DokePipe {
     pub fn new() -> Self {
         Self {
             parsers: vec![],
@@ -64,7 +64,7 @@ impl<'a> DokePipe<'a> {
 
     pub fn add<P>(mut self, parser: P) -> Self
     where
-        P: DokeParser + 'a,
+        P: DokeParser + Send + Sync + 'static,
     {
         self.parsers.push(Box::new(parser));
         self
@@ -72,7 +72,7 @@ impl<'a> DokePipe<'a> {
 
     pub fn map<P>(mut self, parser: P) -> Self
     where
-        P: DokeParser + 'a,
+        P: DokeParser + Send + Sync + 'static,
     {
         #[derive(Debug)]
         struct Mapper<P: DokeParser> {
