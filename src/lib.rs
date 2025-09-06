@@ -1,8 +1,10 @@
 #![allow(dead_code)]
 mod base_parser;
+pub mod file_builder;
 pub mod parsers;
 pub mod semantic;
 pub mod utility;
+
 use crate::base_parser::Position;
 use crate::semantic::{DokeNodeState, DokeValidate, DokeValidationError};
 use base_parser::{DokeBaseParser, DokeStatement};
@@ -24,7 +26,7 @@ pub struct DokeDocument {
 /// The pipe automatically translates the input markdown into `DokeNode`,
 /// a semantic and mutable tree of statements.
 #[derive(Debug)]
-pub struct DokePipe{
+pub struct DokePipe {
     parsers: Vec<Box<dyn DokeParser + Send + Sync + 'static>>,
     parse_options: ParseOptions,
 }

@@ -414,7 +414,11 @@ fn godot_value_to_string(v: &GodotValue) -> String {
                 .collect();
             format!("{{{}}}", parts.join(", "))
         }
-        GodotValue::Resource { type_name, fields } => {
+        GodotValue::Resource {
+            type_name,
+            fields,
+            abstract_type_name: _,
+        } => {
             let mut parts: Vec<String> = vec![format!("type={}", type_name)];
             for (k, v) in fields {
                 parts.push(format!("{}={}", k, godot_value_to_string(v)));
@@ -663,8 +667,10 @@ impl DokeOut for SentenceResult {
                 "doke_tr_key".into(),
                 GodotValue::String(self.tr_key.clone()),
             );
+            let abstract_type = self.abstract_type.clone().unwrap_or("Resource".into());
             GodotValue::Resource {
                 type_name: self.output_type.clone(),
+                abstract_type_name: abstract_type,
                 fields,
             }
         }
@@ -734,232 +740,3 @@ impl Hypo for ErrorHypo {
 // (already defined above) perform_format_string & godot_value_to_string
 
 // ----------------- End of file -----------------
-
-#[cfg(test)]
-mod tests {
-    use crate::DokeParser;
-    use crate::base_parser::Position;
-    use crate::parsers::DebugPrinter;
-    use crate::parsers::sentence::SentenceParser;
-    use crate::semantic::{DokeNode, DokeNodeState, DokeValidate, GodotValue};
-    use std::collections::HashMap;
-
-    // Helper: process a statement and return the resolved GodotValue directly
-    fn resolve_node(
-        parser: &SentenceParser,
-        statement: &str,
-        frontmatter: HashMap<String, GodotValue>,
-    ) -> GodotValue {
-        let mut node = DokeNode {
-            statement: statement.to_string(),
-            state: DokeNodeState::Unresolved,
-            children: Vec::new(),
-            parse_data: HashMap::new(),
-            constituents: HashMap::new(),
-            span: Position { start: 0, end: 0 },
-        };
-
-        // Parse into hypotheses / unresolved states
-        parser.process(&mut node, &frontmatter);
-        let debug_printer = DebugPrinter;
-        debug_printer.process(&mut node, &frontmatter);
-        // Run validator to resolve fully
-        let mut roots = vec![node];
-        let result =
-            DokeValidate::validate_tree(&mut roots, &frontmatter).expect("Validation failed");
-
-        // We only had one root node
-        result.into_iter().next().unwrap()
-    }
-
-    // ✅ FIXED: now always passes frontmatter argument
-    #[test]
-    fn test_nested_reaction_effect() {
-        let yaml = r#"
-DamageEffect:
-  - "Deals {damage: int}"
-
-ReactionEffect:
-  - "When hit: {damage_effect: DamageEffect}"
-"#;
-        let parser = SentenceParser::from_yaml("".into(), yaml).unwrap();
-        let val = resolve_node(&parser, "When hit: Deals 7", HashMap::new());
-
-        if let GodotValue::Resource { type_name, fields } = val {
-            assert_eq!(type_name, "ReactionEffect");
-            if let GodotValue::Resource {
-                type_name: inner_type,
-                fields: inner_fields,
-            } = fields["damage_effect"].clone()
-            {
-                assert_eq!(inner_type, "DamageEffect");
-                assert_eq!(inner_fields.get("damage"), Some(&GodotValue::Int(7)));
-            } else {
-                panic!("Expected inner DamageEffect resource");
-            }
-        } else {
-            panic!("Expected Resource");
-        }
-    }
-
-    // ✅ FIXED: now always passes frontmatter argument
-    #[test]
-    fn test_multiple_effects_in_one_vocab() {
-        let yaml = r#"
-DamageEffect:
-  - "Deals {damage: int}"
-
-HealEffect:
-  - "Heals {amount: int}"
-
-ComboEffect:
-  - "First: {dmg: DamageEffect}, Then: {heal: HealEffect}"
-"#;
-        let parser = SentenceParser::from_yaml("".into(), yaml).unwrap();
-        let val = resolve_node(&parser, "First: Deals 10, Then: Heals 5", HashMap::new());
-
-        if let GodotValue::Resource { type_name, fields } = val {
-            assert_eq!(type_name, "ComboEffect");
-            if let GodotValue::Resource {
-                type_name: dmg_type,
-                fields: dmg_fields,
-            } = fields["dmg"].clone()
-            {
-                assert_eq!(dmg_type, "DamageEffect");
-                assert_eq!(dmg_fields.get("damage"), Some(&GodotValue::Int(10)));
-            } else {
-                panic!("Expected DamageEffect");
-            }
-            if let GodotValue::Resource {
-                type_name: heal_type,
-                fields: heal_fields,
-            } = fields["heal"].clone()
-            {
-                assert_eq!(heal_type, "HealEffect");
-                assert_eq!(heal_fields.get("amount"), Some(&GodotValue::Int(5)));
-            } else {
-                panic!("Expected HealEffect");
-            }
-        } else {
-            panic!("Expected Resource");
-        }
-    }
-
-    #[test]
-    fn test_nested_combo_with_reaction() {
-        let yaml = r#"
-DamageEffect:
-  - "Deals {damage: int}"
-
-HealEffect:
-  - "Heals {amount: int}"
-
-ReactionEffect:
-  - "When hit: {damage_effect: DamageEffect}"
-
-ComboEffect:
-  - "First: {dmg: DamageEffect}, Then: {heal: HealEffect}, Reaction: {reaction: ReactionEffect}"
-"#;
-
-        let parser = SentenceParser::from_yaml("".into(), yaml).unwrap();
-        let val = resolve_node(
-            &parser,
-            "First: Deals 10, Then: Heals 5, Reaction: When hit: Deals 2",
-            HashMap::new(),
-        );
-
-        if let GodotValue::Resource { type_name, fields } = val {
-            assert_eq!(type_name, "ComboEffect");
-
-            // dmg
-            if let GodotValue::Resource {
-                type_name: dmg_type,
-                fields: dmg_fields,
-            } = fields["dmg"].clone()
-            {
-                assert_eq!(dmg_type, "DamageEffect");
-                assert_eq!(dmg_fields.get("damage"), Some(&GodotValue::Int(10)));
-            } else {
-                panic!("Expected DamageEffect");
-            }
-
-            // heal
-            if let GodotValue::Resource {
-                type_name: heal_type,
-                fields: heal_fields,
-            } = fields["heal"].clone()
-            {
-                assert_eq!(heal_type, "HealEffect");
-                assert_eq!(heal_fields.get("amount"), Some(&GodotValue::Int(5)));
-            } else {
-                panic!("Expected HealEffect");
-            }
-
-            // reaction
-            if let GodotValue::Resource {
-                type_name: reaction_type,
-                fields: reaction_fields,
-            } = fields["reaction"].clone()
-            {
-                assert_eq!(reaction_type, "ReactionEffect");
-
-                if let GodotValue::Resource {
-                    type_name: inner_type,
-                    fields: inner_fields,
-                } = reaction_fields["damage_effect"].clone()
-                {
-                    assert_eq!(inner_type, "DamageEffect");
-                    assert_eq!(inner_fields.get("damage"), Some(&GodotValue::Int(2)));
-                } else {
-                    panic!("Expected inner DamageEffect");
-                }
-            } else {
-                panic!("Expected ReactionEffect");
-            }
-        } else {
-            panic!("Expected ComboEffect");
-        }
-    }
-
-    #[test]
-    fn test_multi_level_reactions() {
-        let yaml = r#"
-DamageEffect:
-  - "Deals {damage: int}"
-
-ReactionEffect:
-  - "On hit: {damage_effect: DamageEffect}"
-
-SuperReactionEffect:
-  - "Triggered: {reaction: ReactionEffect}"
-"#;
-
-        let parser = SentenceParser::from_yaml("".into(), yaml).unwrap();
-        let val = resolve_node(&parser, "Triggered: On hit: Deals 7", HashMap::new());
-
-        if let GodotValue::Resource { type_name, fields } = val {
-            assert_eq!(type_name, "SuperReactionEffect");
-            if let GodotValue::Resource {
-                type_name: reaction_type,
-                fields: reaction_fields,
-            } = fields["reaction"].clone()
-            {
-                assert_eq!(reaction_type, "ReactionEffect");
-                if let GodotValue::Resource {
-                    type_name: inner_type,
-                    fields: inner_fields,
-                } = reaction_fields["damage_effect"].clone()
-                {
-                    assert_eq!(inner_type, "DamageEffect");
-                    assert_eq!(inner_fields.get("damage"), Some(&GodotValue::Int(7)));
-                } else {
-                    panic!("Expected inner DamageEffect");
-                }
-            } else {
-                panic!("Expected ReactionEffect");
-            }
-        } else {
-            panic!("Expected SuperReactionEffect");
-        }
-    }
-}

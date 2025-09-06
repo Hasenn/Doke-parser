@@ -6,7 +6,6 @@ use std::collections::HashMap;
 #[derive(Debug)]
 pub struct DebugPrinter;
 
-
 impl DebugPrinter {
     fn state_emoji(state: &DokeNodeState) -> &'static str {
         match state {

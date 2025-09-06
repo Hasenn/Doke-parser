@@ -1,0 +1,10 @@
+Action:
+  - "Action"
+  - "Alternate"
+Action:
+  - "{action : Action}(in a {zone: Zone})"
+  - "{action : Action}(in a {zone: Zone}, range : {range: int})"
+Zone:
+  - "{size: int}-cross"
+  - "{size: int}-square"
+  - "{size: int}-circle"

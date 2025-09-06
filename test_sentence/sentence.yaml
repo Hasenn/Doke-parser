@@ -1,8 +1,10 @@
 DamageEffect:
   - "Deals {damage: int} damage"
-
-HealEffect:
-  - "Heals for {amount: int}"
+  - "Deals {damage: int} damage to {target : Target}"
+  - "Deals {damage: int} damage to {target : Target}, with {element : Element}"
+DamageElemEffect:
+  - "Deals {damage: int} damage"
+  - "Deals {damage: int} damage to target"
 
 Target:
   - "allies": 1
@@ -15,13 +17,7 @@ Target:
   - "weakest": 8
   - "strongest": 9
   - "leader": 10
-ReactionEffect:
-  - "When hit: {damage_effect: DamageEffect}" : OnHitReaction
-  - "When attacked: {damage_effect: DamageEffect}" : OnAtkReaction
-  - "On crit: {damage_effect: DamageEffect}" : OnCrit
-  - "On defend: {damage_effect: DamageEffect}" : OnDefend
-  - "When missed: {damage_effect: DamageEffect}" : OnMiss
-  - "Counter: {damage_effect: DamageEffect}" : OnCounter
-  - "Reflect: {damage_effect: DamageEffect}" : OnReflect
-  - "Absorb: {damage_effect: DamageEffect}" : OnAbsorb
-  - "Redirect: {damage_effect: DamageEffect}" : OnRedirect
+
+Element:
+ - fire : FireDamageElement
+ - water : WaterDamageElement

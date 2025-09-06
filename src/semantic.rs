@@ -20,6 +20,7 @@ pub enum GodotValue {
     Dict(HashMap<String, GodotValue>),
     Resource {
         type_name: String,
+        abstract_type_name: String,
         fields: HashMap<String, GodotValue>,
     },
 }
@@ -43,7 +44,11 @@ impl fmt::Display for GodotValue {
                     .collect();
                 write!(f, "{{{}}}", entries.join(", "))
             }
-            GodotValue::Resource { type_name, fields } => {
+            GodotValue::Resource {
+                type_name,
+                fields,
+                abstract_type_name: _,
+            } => {
                 let entries: Vec<String> = fields
                     .iter()
                     .map(|(k, v)| format!("\"{}\": {}", k, v))
@@ -53,8 +58,6 @@ impl fmt::Display for GodotValue {
         }
     }
 }
-
-
 
 // ----------------- Traits -----------------
 
@@ -220,6 +223,7 @@ impl DokeOut for GodotValue {
             GodotValue::Resource {
                 type_name: _,
                 fields: _,
+                abstract_type_name: _,
             } => "Resource",
         }
     }
@@ -246,6 +250,7 @@ impl DokeOut for GodotValue {
             GodotValue::Resource {
                 type_name: _,
                 fields,
+                abstract_type_name: _,
             } => {
                 match &mut fields
                     .entry("children".into())

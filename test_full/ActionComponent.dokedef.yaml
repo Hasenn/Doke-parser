@@ -1,0 +1,7 @@
+DamageComponent:
+ - "Deal {damage : int} damage"
+ - "Deal {damage : int} damage to {target : Target}"
+
+Target : 
+ - "enemies" : 0
+ - "allies" : 1

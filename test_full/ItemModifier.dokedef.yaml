@@ -1,0 +1,10 @@
+AddStatModifier:
+  - "Adds {amount : int} {stat : Stat} to {target : Target}" 
+
+Stat:
+  - health : "stats/health"
+  - "max health" : "stats/max_health"
+
+Target:
+  - allies : 0
+  - enemies : 1

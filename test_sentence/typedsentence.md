@@ -1,4 +1,7 @@
-This is an item
-- Another Effect
-- An Effect
 
+
+Action:
+- Deal damage
+
+Alternate:
+- Deal damage

@@ -1,7 +1,7 @@
 root: Item
 children:
-  - modifiers: [ItemModifier]
-  - action: ItemAction
+  - modifiers?: [ItemModifier]
+  - action?: ItemAction
   - alternate?: ItemAction
   - description?: String
   - additional_text?: [String]
@@ -13,4 +13,8 @@ rules:
 
   - for: ItemAction
     parser: "**/*ItemAction.dokedef.yaml"
-    children: [ModifierOperation]
+    children: [ActionComponent]
+  
+  - for: ActionComponent
+    parser : "**/*ActionComponent.dokedef.yaml"
+    children: [ActionComponent]
