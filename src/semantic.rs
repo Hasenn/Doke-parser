@@ -107,7 +107,7 @@ pub enum DokeNodeState {
 // ----------------- Parsers -----------------
 
 /// Updated trait: parsers now get a reference to frontmatter
-pub trait DokeParser: Debug {
+pub trait DokeParser: Debug + Send + Sync {
     fn process(&self, node: &mut DokeNode, frontmatter: &HashMap<String, GodotValue>);
 }
 // ----------------- Error Types -----------------
